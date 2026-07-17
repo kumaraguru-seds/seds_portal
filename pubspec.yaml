@@ -124,6 +124,7 @@ flutter_launcher_icons:
 msix_config:
   display_name: SEDS Portal
   publisher_display_name: Kumaraguru SEDS
+  publisher: "CN=Kumaraguru SEDS"
   identity_name: com.kumaraguruseds.sedsportal
   title: SEDS Portal
   logo_path: windows/runner/resources/app_icon.ico
