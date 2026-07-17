@@ -190,7 +190,7 @@ class _UserProfileDetailsFormPageState extends State<UserProfileDetailsFormPage>
     final emailCtrl = TextEditingController(text: widget.userData.email);
 
     return Scaffold(
-      backgroundColor: const Color(0xFF080F1F),
+      backgroundColor: Colors.transparent,
       body: Stack(
         children: [
           Positioned(

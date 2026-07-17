@@ -145,12 +145,102 @@ class _ChatTabState extends State<ChatTab> {
         final data = jsonDecode(response.body);
         if (data['success'] == true) {
           final String encryptedKey = data['encrypted_key'];
-          final String decryptedKey = CryptoHelper.rsaDecrypt(encryptedKey, _myPrivateKeyPem);
-          _decryptedRoomKeys[roomId] = decryptedKey;
+          String decryptedKey = '';
+          bool decryptionSuccess = false;
+          try {
+            decryptedKey = CryptoHelper.rsaDecrypt(encryptedKey, _myPrivateKeyPem);
+            decryptionSuccess = decryptedKey.length == 32;
+          } catch (e) {
+            debugPrint('[E2EE] Local key decryption failed for room $roomId: $e');
+          }
+
+          if (decryptionSuccess) {
+            _decryptedRoomKeys[roomId] = decryptedKey;
+          } else {
+            // Decryption failed (key mismatch/reset). Trigger self-healing!
+            await _healRoomKey(roomId);
+          }
         }
+      } else {
+        // Room key not found on server, trigger healing to generate one
+        await _healRoomKey(roomId);
       }
     } catch (e) {
       debugPrint('[Chat Tab] Decryption key load failed for room $roomId: $e');
+    }
+  }
+
+  // Self-heal and regenerate E2EE symmetric keys for a room
+  Future<void> _healRoomKey(String roomId) async {
+    try {
+      final roomData = _rooms.firstWhere((r) => r['id'] == roomId, orElse: () => null);
+      if (roomData == null) return;
+      final List<String> members = List<String>.from(roomData['members'] ?? []);
+      if (members.isEmpty) return;
+
+      // 1. Fetch public keys of all members
+      final emailsQuery = members.join(',');
+      final keyUrl = Uri.parse('$apiBaseUrl/api/chat/public-keys?emails=${Uri.encodeComponent(emailsQuery)}');
+      final keyRes = await http.get(keyUrl);
+      if (keyRes.statusCode != 200) return;
+      final keyData = jsonDecode(keyRes.body);
+      final keysList = keyData['keys'] as List;
+
+      final Map<String, String> publicKeysMap = {};
+      for (var k in keysList) {
+        final email = k['user_email'].toString().toLowerCase().trim();
+        final pubKey = k['public_key'].toString();
+        publicKeysMap[email] = pubKey;
+      }
+
+      final List<Map<String, String>> encryptedKeysPayload = [];
+      final String plaintextRoomKey = CryptoHelper.generateRandomAESKey();
+
+      for (var member in members) {
+        String? pubKey = publicKeysMap[member.toLowerCase().trim()];
+        if (pubKey == null) {
+          // Bootstrap keypair for the missing member
+          final tempPair = CryptoHelper.generateRSAKeyPair();
+          pubKey = CryptoHelper.publicKeyToPem(tempPair.publicKey);
+          final tempPrivate = CryptoHelper.privateKeyToPem(tempPair.privateKey);
+
+          // Upload keys
+          final bootstrapUrl = Uri.parse('$apiBaseUrl/api/chat/bootstrap-private-key');
+          await http.post(
+            bootstrapUrl,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'email': member,
+              'public_key': pubKey,
+              'private_key': tempPrivate,
+            }),
+          );
+        }
+
+        final encKey = CryptoHelper.rsaEncrypt(plaintextRoomKey, pubKey);
+        encryptedKeysPayload.add({
+          'email': member,
+          'encrypted_key': encKey,
+        });
+      }
+
+      // 2. Upload room keys
+      final keysUrl = Uri.parse('$apiBaseUrl/api/chat/room-keys');
+      final response = await http.post(
+        keysUrl,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'room_id': roomId,
+          'keys': encryptedKeysPayload,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        _decryptedRoomKeys[roomId] = plaintextRoomKey;
+        debugPrint('[E2EE] Successfully self-healed and rotated room key for $roomId!');
+      }
+    } catch (e) {
+      debugPrint('[E2EE] Error healing room key for $roomId: $e');
     }
   }
 
@@ -179,9 +269,9 @@ class _ChatTabState extends State<ChatTab> {
     final poppins = GoogleFonts.poppins;
 
     return Scaffold(
-      backgroundColor: const Color(0xFF101D35),
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF162544),
+        backgroundColor: const Color(0xFF162544).withValues(alpha: 0.8),
         elevation: 0,
         title: Text(
           'SEDS Chat',
@@ -189,7 +279,7 @@ class _ChatTabState extends State<ChatTab> {
         ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.search, color: Color(0xFF4DA6FF)),
+            icon: const Icon(Icons.search, color: Colors.white),
             onPressed: _showNewChatDialog,
           ),
           IconButton(
@@ -199,7 +289,7 @@ class _ChatTabState extends State<ChatTab> {
         ],
       ),
       body: _isLoading
-          ? const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF4DA6FF))))
+          ? const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.white)))
           : _rooms.isEmpty
               ? _buildEmptyState(poppins)
               : ListView.separated(
@@ -233,10 +323,10 @@ class _ChatTabState extends State<ChatTab> {
                     return ListTile(
                       leading: CircleAvatar(
                         radius: 24,
-                        backgroundColor: const Color(0xFF4DA6FF).withValues(alpha: 0.15),
+                        backgroundColor: Colors.white.withValues(alpha: 0.15),
                         backgroundImage: (imageUrl != null && imageUrl.isNotEmpty) ? NetworkImage(imageUrl) : null,
                         child: (imageUrl == null || imageUrl.isEmpty)
-                            ? Text(avatarLetter, style: poppins(color: const Color(0xFF4DA6FF), fontWeight: FontWeight.bold, fontSize: 18))
+                            ? Text(avatarLetter, style: poppins(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18))
                             : null,
                       ),
                       title: Text(
@@ -292,12 +382,12 @@ class _ChatTabState extends State<ChatTab> {
           const SizedBox(height: 24),
           ElevatedButton.icon(
             style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF4DA6FF),
+              backgroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
-            icon: const Icon(Icons.search, color: Colors.white),
-            label: Text('New Chat', style: poppins(color: Colors.white, fontWeight: FontWeight.bold)),
+            icon: const Icon(Icons.search, color: Color(0xFF0D1E3A)),
+            label: Text('New Chat', style: poppins(color: const Color(0xFF0D1E3A), fontWeight: FontWeight.bold)),
             onPressed: _showNewChatDialog,
           ),
         ],
@@ -447,17 +537,29 @@ class _NewChatDialogState extends State<_NewChatDialog> {
       if (keyRes.statusCode != 200) throw Exception('Failed to fetch public key');
       final keyData = jsonDecode(keyRes.body);
       final keysList = keyData['keys'] as List;
+      String otherPublicKeyPem = '';
       if (keysList.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Recipient has not configured E2EE keys yet. Please ask them to log in to Chat.')),
-          );
-        }
-        if (mounted) setState(() => _loading = false);
-        return;
-      }
+        // Auto-bootstrap a key pair for the recipient on the fly
+        final tempPair = CryptoHelper.generateRSAKeyPair();
+        final tempPublic = CryptoHelper.publicKeyToPem(tempPair.publicKey);
+        final tempPrivate = CryptoHelper.privateKeyToPem(tempPair.privateKey);
 
-      final String otherPublicKeyPem = keysList[0]['public_key'];
+        // Upload keys to server
+        final bootstrapUrl = Uri.parse('$apiBaseUrl/api/chat/bootstrap-private-key');
+        final bRes = await http.post(
+          bootstrapUrl,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'email': otherEmail,
+            'public_key': tempPublic,
+            'private_key': tempPrivate,
+          }),
+        );
+        if (bRes.statusCode != 200) throw Exception('Failed to bootstrap keys for recipient');
+        otherPublicKeyPem = tempPublic;
+      } else {
+        otherPublicKeyPem = keysList[0]['public_key'];
+      }
 
       // Generate AES Symmetric Key for this room
       final String plaintextRoomKey = CryptoHelper.generateRandomAESKey();
@@ -519,41 +621,78 @@ class _NewChatDialogState extends State<_NewChatDialog> {
       final String myEmail = widget.userData.email.toLowerCase().trim();
       final String roomId = 'group_${DateTime.now().millisecondsSinceEpoch}';
 
-      // Add self to group members
-      final allEmails = [myEmail, ..._selectedEmails];
+      // 1. Fetch all admin emails from API
+      List<String> adminEmails = [];
+      try {
+        final adminUrl = Uri.parse('$apiBaseUrl/api/chat/admins');
+        final adminRes = await http.get(adminUrl);
+        if (adminRes.statusCode == 200) {
+          final adminData = jsonDecode(adminRes.body);
+          if (adminData['success'] == true && adminData['admins'] != null) {
+            adminEmails = List<String>.from(adminData['admins']);
+          }
+        }
+      } catch (e) {
+        debugPrint('[Chat Setup] Failed to fetch admins: $e');
+      }
 
-      // Fetch public keys of all group members
-      final emailsQuery = allEmails.join(',');
+      // Add self + selected emails to form the core required group members
+      final Set<String> groupEmailsSet = {myEmail, ..._selectedEmails};
+      // We will query public keys for all required members plus the admins
+      final Set<String> allQueryEmailsSet = {...groupEmailsSet, ...adminEmails};
+
+      // 2. Fetch public keys of all participants and admins
+      final emailsQuery = allQueryEmailsSet.join(',');
       final keyUrl = Uri.parse('$apiBaseUrl/api/chat/public-keys?emails=${Uri.encodeComponent(emailsQuery)}');
       final keyRes = await http.get(keyUrl);
       if (keyRes.statusCode != 200) throw Exception('Failed to fetch public keys');
       final keyData = jsonDecode(keyRes.body);
       final keysList = keyData['keys'] as List;
 
-      // Ensure all members have keys uploaded
-      if (keysList.length < allEmails.length) {
-        final foundEmails = keysList.map((k) => k['user_email'].toString().toLowerCase()).toList();
-        final missing = allEmails.where((e) => !foundEmails.contains(e)).toList();
+      // Map found emails to their public keys
+      final Map<String, String> publicKeysMap = {};
+      for (var k in keysList) {
+        final email = k['user_email'].toString().toLowerCase().trim();
+        final pubKey = k['public_key'].toString();
+        publicKeysMap[email] = pubKey;
+      }
+
+      // Check if any of the REQUIRED group members are missing E2EE keys
+      final List<String> missingRequired = [];
+      for (var reqEmail in groupEmailsSet) {
+        if (!publicKeysMap.containsKey(reqEmail)) {
+          missingRequired.add(reqEmail);
+        }
+      }
+
+      if (missingRequired.isNotEmpty) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Some members have not initialized chats yet: ${missing.join(', ')}')),
+            SnackBar(content: Text('Some members have not initialized E2EE chats yet: ${missingRequired.join(', ')}')),
           );
         }
         if (mounted) setState(() => _loading = false);
         return;
       }
 
+      // 3. Final list of members: core members + admins who have keys initialized
+      final List<String> finalMembers = [...groupEmailsSet];
+      for (var adminEmail in adminEmails) {
+        if (publicKeysMap.containsKey(adminEmail) && !finalMembers.contains(adminEmail)) {
+          finalMembers.add(adminEmail);
+        }
+      }
+
       // Generate AES Key for Group
       final String plaintextRoomKey = CryptoHelper.generateRandomAESKey();
 
-      // Encrypt key for all participants
+      // Encrypt key for all final participants
       final List<Map<String, String>> encryptedKeysPayload = [];
-      for (var userKey in keysList) {
-        final email = userKey['user_email'];
-        final pubKey = userKey['public_key'];
+      for (var member in finalMembers) {
+        final pubKey = publicKeysMap[member]!;
         final encKey = CryptoHelper.rsaEncrypt(plaintextRoomKey, pubKey);
         encryptedKeysPayload.add({
-          'email': email,
+          'email': member,
           'encrypted_key': encKey,
         });
       }
@@ -569,7 +708,7 @@ class _NewChatDialogState extends State<_NewChatDialog> {
           'is_group': true,
           'team': widget.userData.team,
           'created_by': myEmail,
-          'members': allEmails,
+          'members': finalMembers,
         }),
       );
 
@@ -616,7 +755,7 @@ class _NewChatDialogState extends State<_NewChatDialog> {
         height: 600,
         padding: const EdgeInsets.all(20),
         child: _loading
-            ? const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF4DA6FF))))
+            ? const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.white)))
             : Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -630,7 +769,7 @@ class _NewChatDialogState extends State<_NewChatDialog> {
                       if (canCreateGroup && !_isCreatingGroup)
                         TextButton(
                           onPressed: () => setState(() => _isCreatingGroup = true),
-                          child: Text('New Group', style: poppins(color: const Color(0xFF4DA6FF), fontWeight: FontWeight.bold)),
+                          child: Text('New Group', style: poppins(color: Colors.white, fontWeight: FontWeight.bold)),
                         ),
                       if (_isCreatingGroup)
                         TextButton(
@@ -692,15 +831,16 @@ class _NewChatDialogState extends State<_NewChatDialog> {
                               return ListTile(
                                 contentPadding: EdgeInsets.zero,
                                 leading: CircleAvatar(
-                                  backgroundColor: const Color(0xFF4DA6FF).withValues(alpha: 0.1),
-                                  child: Text(name[0].toUpperCase(), style: poppins(color: const Color(0xFF4DA6FF), fontWeight: FontWeight.bold)),
+                                  backgroundColor: Colors.white.withValues(alpha: 0.1),
+                                  child: Text(name[0].toUpperCase(), style: poppins(color: Colors.white, fontWeight: FontWeight.bold)),
                                 ),
                                 title: Text(name, style: poppins(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14)),
                                 subtitle: Text('$roll • $role • $team', style: poppins(color: Colors.white30, fontSize: 11)),
                                 trailing: _isCreatingGroup
                                     ? Checkbox(
                                         value: isSelected,
-                                        activeColor: const Color(0xFF4DA6FF),
+                                        activeColor: Colors.white,
+                                        checkColor: const Color(0xFF162544),
                                         onChanged: (val) {
                                           setState(() {
                                             if (val == true) {
@@ -711,7 +851,7 @@ class _NewChatDialogState extends State<_NewChatDialog> {
                                           });
                                         },
                                       )
-                                    : const Icon(Icons.chat_bubble_outline, color: Color(0xFF4DA6FF), size: 18),
+                                    : const Icon(Icons.chat_bubble_outline, color: Colors.white, size: 18),
                                 onTap: () {
                                   if (_isCreatingGroup) {
                                     setState(() {
@@ -736,14 +876,14 @@ class _NewChatDialogState extends State<_NewChatDialog> {
                       width: double.infinity,
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFF4DA6FF),
+                          backgroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(vertical: 14),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                         onPressed: _selectedEmails.isNotEmpty ? _createGroupChat : null,
                         child: Text(
                           'Create Group (${_selectedEmails.length})',
-                          style: poppins(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                          style: poppins(color: const Color(0xFF162544), fontWeight: FontWeight.bold, fontSize: 14),
                         ),
                       ),
                     ),
@@ -950,8 +1090,8 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
 
       final File file = File(result.files.single.path!);
 
-      // SEDS Portal upload logic (POST /api/upload)
-      final request = http.MultipartRequest('POST', Uri.parse('$apiBaseUrl/api/upload'));
+      // SEDS Portal upload logic (POST /api/chat/upload)
+      final request = http.MultipartRequest('POST', Uri.parse('$apiBaseUrl/api/chat/upload'));
       request.files.add(await http.MultipartFile.fromPath('file', file.path));
       
       final streamedResponse = await request.send();
@@ -987,132 +1127,143 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
     final myEmail = widget.userData.email.toLowerCase();
 
     return Scaffold(
-      backgroundColor: const Color(0xFF101D35),
+      backgroundColor: Colors.transparent,
       appBar: AppBar(
-        backgroundColor: const Color(0xFF162544),
+        backgroundColor: const Color(0xFF162544).withValues(alpha: 0.8),
         title: Text(
           widget.roomTitle,
           style: poppins(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16),
         ),
         elevation: 0,
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Color(0xFF4DA6FF))))
-          : Column(
-              children: [
-                Expanded(
-                  child: ListView.builder(
-                    controller: _scrollCtrl,
-                    padding: const EdgeInsets.all(16),
-                    itemCount: _messages.length,
-                    itemBuilder: (ctx, idx) {
-                      final msg = _messages[idx];
-                      final bool isMe = msg['sender_email'].toString().toLowerCase() == myEmail;
-                      final String encryptedContent = msg['encrypted_content'] ?? '';
-                      final String? mediaUrl = msg['media_url'];
+      body: Container(
+        decoration: const BoxDecoration(
+          image: DecorationImage(
+            image: AssetImage('assets/background.png'),
+            fit: BoxFit.cover,
+          ),
+        ),
+        child: Container(
+          color: Colors.black.withValues(alpha: 0.55), // overlay for readability
+          child: _loading
+              ? const Center(child: CircularProgressIndicator(valueColor: AlwaysStoppedAnimation<Color>(Colors.white)))
+              : Column(
+                  children: [
+                    Expanded(
+                      child: ListView.builder(
+                        controller: _scrollCtrl,
+                        padding: const EdgeInsets.all(16),
+                        itemCount: _messages.length,
+                        itemBuilder: (ctx, idx) {
+                          final msg = _messages[idx];
+                          final bool isMe = msg['sender_email'].toString().toLowerCase() == myEmail;
+                          final String encryptedContent = msg['encrypted_content'] ?? '';
+                          final String? mediaUrl = msg['media_url'];
 
-                      // Decrypt locally
-                      String plaintext = '[Media Attachment]';
-                      if (encryptedContent.isNotEmpty) {
-                        plaintext = CryptoHelper.aesDecrypt(encryptedContent, widget.roomKey);
-                      }
+                          // Decrypt locally
+                          String plaintext = '[Media Attachment]';
+                          if (encryptedContent.isNotEmpty) {
+                            plaintext = CryptoHelper.aesDecrypt(encryptedContent, widget.roomKey);
+                          }
 
-                      final String senderLabel = isMe ? 'You' : '${msg['sender_name']} (${msg['sender_roll_number']})';
+                          final String senderLabel = isMe ? 'You' : '${msg['sender_name']} (${msg['sender_roll_number']})';
 
-                      return Align(
-                        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                        child: Container(
-                          margin: const EdgeInsets.only(bottom: 12),
-                          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: isMe ? const Color(0xFF4DA6FF).withValues(alpha: 0.15) : Colors.white.withValues(alpha: 0.05),
-                            borderRadius: BorderRadius.only(
-                              topLeft: const Radius.circular(16),
-                              topRight: const Radius.circular(16),
-                              bottomLeft: isMe ? const Radius.circular(16) : Radius.zero,
-                              bottomRight: isMe ? Radius.zero : const Radius.circular(16),
-                            ),
-                            border: Border.all(
-                              color: isMe ? const Color(0xFF4DA6FF).withValues(alpha: 0.3) : Colors.white.withValues(alpha: 0.08),
-                            ),
-                          ),
-                          child: GestureDetector(
-                            onLongPress: () => _showMessageDetails(msg),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  senderLabel,
-                                  style: poppins(color: isMe ? const Color(0xFF4DA6FF) : Colors.white60, fontSize: 10, fontWeight: FontWeight.bold),
+                          return Align(
+                            alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 12),
+                              constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.75),
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: isMe ? Colors.white.withValues(alpha: 0.15) : Colors.white.withValues(alpha: 0.05),
+                                borderRadius: BorderRadius.only(
+                                  topLeft: const Radius.circular(16),
+                                  topRight: const Radius.circular(16),
+                                  bottomLeft: isMe ? const Radius.circular(16) : Radius.zero,
+                                  bottomRight: isMe ? Radius.zero : const Radius.circular(16),
                                 ),
-                                const SizedBox(height: 6),
-                                if (mediaUrl != null && mediaUrl.isNotEmpty) ...[
-                                  ClipRRect(
-                                    borderRadius: BorderRadius.circular(8),
-                                    child: Image.network(
-                                      mediaUrl,
-                                      fit: BoxFit.cover,
-                                      loadingBuilder: (context, child, loadingProgress) {
-                                        if (loadingProgress == null) return child;
-                                        return const SizedBox(
-                                          height: 150,
-                                          child: Center(child: CircularProgressIndicator()),
-                                        );
-                                      },
-                                    ),
-                                  ),
-                                  const SizedBox(height: 6),
-                                ],
-                                if (encryptedContent.isNotEmpty)
-                                  Text(
-                                    plaintext,
-                                    style: poppins(color: Colors.white, fontSize: 13.5),
-                                  ),
-                                const SizedBox(height: 6),
-                                Row(
-                                  mainAxisAlignment: MainAxisAlignment.end,
-                                  mainAxisSize: MainAxisSize.min,
+                                border: Border.all(
+                                  color: isMe ? Colors.white.withValues(alpha: 0.3) : Colors.white.withValues(alpha: 0.08),
+                                ),
+                              ),
+                              child: GestureDetector(
+                                onLongPress: () => _showMessageDetails(msg),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      msg['created_at'] != null
-                                          ? DateTime.parse(msg['created_at']).toLocal().toString().substring(11, 16)
-                                          : '',
-                                      style: poppins(color: Colors.white24, fontSize: 9),
+                                      senderLabel,
+                                      style: poppins(color: isMe ? Colors.white : Colors.white60, fontSize: 10, fontWeight: FontWeight.bold),
                                     ),
-                                    if (isMe) ...[
-                                      const SizedBox(width: 4),
-                                      Icon(
-                                        Icons.done_all,
-                                        size: 12,
-                                        color: msg['status'] == 'read' ? const Color(0xFF4DA6FF) : Colors.white24,
+                                    const SizedBox(height: 6),
+                                    if (mediaUrl != null && mediaUrl.isNotEmpty) ...[
+                                      ClipRRect(
+                                        borderRadius: BorderRadius.circular(8),
+                                        child: Image.network(
+                                          mediaUrl,
+                                          fit: BoxFit.cover,
+                                          loadingBuilder: (context, child, loadingProgress) {
+                                            if (loadingProgress == null) return child;
+                                            return const SizedBox(
+                                              height: 150,
+                                              child: Center(child: CircularProgressIndicator()),
+                                            );
+                                          },
+                                        ),
                                       ),
-                                    ]
+                                      const SizedBox(height: 6),
+                                    ],
+                                    if (encryptedContent.isNotEmpty)
+                                      Text(
+                                        plaintext,
+                                        style: poppins(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.bold),
+                                      ),
+                                    const SizedBox(height: 6),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.end,
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(
+                                          msg['created_at'] != null
+                                              ? DateTime.parse(msg['created_at']).toLocal().toString().substring(11, 16)
+                                              : '',
+                                          style: poppins(color: Colors.white.withValues(alpha: 0.8), fontSize: 10, fontWeight: FontWeight.bold),
+                                        ),
+                                        if (isMe) ...[
+                                          const SizedBox(width: 4),
+                                          Icon(
+                                            Icons.done_all,
+                                            size: 12,
+                                            color: msg['status'] == 'read' ? Colors.white : Colors.white.withValues(alpha: 0.4),
+                                          ),
+                                        ]
+                                      ],
+                                    ),
                                   ],
                                 ),
-                              ],
+                              ),
                             ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+                          );
+                        },
+                      ),
+                    ),
+                    _buildInputBar(poppins),
+                  ],
                 ),
-                _buildInputBar(poppins),
-              ],
-            ),
+        ),
+      ),
     );
   }
 
   Widget _buildInputBar(TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      color: const Color(0xFF162544),
+      color: const Color(0xFF162544).withValues(alpha: 0.95),
       child: SafeArea(
         child: Row(
           children: [
             IconButton(
-              icon: const Icon(Icons.image_outlined, color: Color(0xFF4DA6FF)),
+              icon: const Icon(Icons.image_outlined, color: Colors.white70),
               onPressed: _shareImage,
             ),
             Expanded(
@@ -1129,7 +1280,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
               ),
             ),
             IconButton(
-              icon: const Icon(Icons.send_rounded, color: Color(0xFF4DA6FF)),
+              icon: const Icon(Icons.send_rounded, color: Colors.white),
               onPressed: () => _sendMessage(),
             ),
           ],
@@ -1210,9 +1361,9 @@ class _MessageDetailsDialogState extends State<_MessageDetailsDialog> {
                             return ListTile(
                               contentPadding: EdgeInsets.zero,
                               leading: CircleAvatar(
-                                backgroundColor: const Color(0xFF4DA6FF).withValues(alpha: 0.1),
+                                backgroundColor: Colors.white.withValues(alpha: 0.1),
                                 radius: 16,
-                                child: Text(name.isNotEmpty ? name[0].toUpperCase() : 'U', style: widget.poppins(color: const Color(0xFF4DA6FF), fontSize: 12)),
+                                child: Text(name.isNotEmpty ? name[0].toUpperCase() : 'U', style: widget.poppins(color: Colors.white, fontSize: 12)),
                               ),
                               title: Text(name, style: widget.poppins(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w500)),
                               trailing: Text(timeStr, style: widget.poppins(color: Colors.white30, fontSize: 11)),

@@ -222,7 +222,7 @@ class UpdateChecker {
                         ctx,
                         downloadUrl,
                         newVersion,
-                        Platform.isAndroid ? 'apk' : 'msix',
+                        Platform.isAndroid ? 'apk' : 'exe',
                       );
                     },
                   ),
@@ -241,11 +241,12 @@ class UpdateChecker {
     BuildContext context,
     String fileUrl,
     String version,
-    String extension,  // 'apk' or 'msix'
+    String extension,  // 'apk' or 'exe'
   ) async {
     // ValueNotifier lets us update the dialog from outside its builder
     final progressNotifier = ValueNotifier<double>(0.0);
     final overlayContext = context;
+    final cancelToken = CancelToken();
 
     if (!overlayContext.mounted) return;
 
@@ -302,6 +303,18 @@ class UpdateChecker {
                   style: GoogleFonts.poppins(
                       color: Colors.white60, fontSize: 12),
                 ),
+                const SizedBox(height: 20),
+                TextButton.icon(
+                  onPressed: () {
+                    cancelToken.cancel('User cancelled download');
+                    Navigator.of(ctx).pop();
+                  },
+                  icon: const Icon(Icons.close_rounded, color: Colors.white60, size: 16),
+                  label: Text(
+                    'Cancel Update',
+                    style: GoogleFonts.poppins(color: Colors.white60, fontSize: 13),
+                  ),
+                ),
               ],
             ),
           ),
@@ -318,6 +331,7 @@ class UpdateChecker {
       await dio.download(
         fileUrl,
         savePath,
+        cancelToken: cancelToken,
         onReceiveProgress: (received, total) {
           if (total > 0) {
             progressNotifier.value = received / total;
@@ -335,11 +349,24 @@ class UpdateChecker {
         Navigator.of(overlayContext, rootNavigator: true).pop();
       }
 
-      // Launch Android package installer
+      // Launch Android package installer / Windows exe setup
       final result = await OpenFile.open(savePath);
       debugPrint('[UpdateChecker] OpenFile result: ${result.message}');
     } catch (e) {
       debugPrint('[UpdateChecker] Download failed: $e');
+
+      // If download was cancelled by the user, show cancel toast rather than error message
+      if (e is DioException && e.type == DioExceptionType.cancel) {
+        if (overlayContext.mounted) {
+          ScaffoldMessenger.of(overlayContext).showSnackBar(
+            const SnackBar(
+              content: Text('Update cancelled.'),
+              backgroundColor: Color(0xFF2A4080),
+            ),
+          );
+        }
+        return;
+      }
 
       if (overlayContext.mounted) {
         Navigator.of(overlayContext, rootNavigator: true).pop();

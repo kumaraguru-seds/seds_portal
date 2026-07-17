@@ -117,7 +117,7 @@ class _LoginPageState extends State<LoginPage>
       Navigator.pushReplacement(
         context,
         MaterialPageRoute(
-          builder: (context) => UserProfileDetailsFormPage(userData: userData),
+          builder: (context) => DesktopPageWrapper(child: UserProfileDetailsFormPage(userData: userData)),
         ),
       );
     } else {

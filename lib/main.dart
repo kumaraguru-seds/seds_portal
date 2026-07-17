@@ -33,6 +33,7 @@ import 'update_coordinates_page.dart';
 import 'user_profile_details_form_page.dart';
 import 'apply_leave_page.dart';
 import 'update_checker.dart';
+import 'crypto_helper.dart';
 import 'package:file_picker/file_picker.dart';
 import 'chat_tab.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -588,7 +589,28 @@ class DesktopPageWrapper extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (!Platform.isWindows) {
-      return child;
+      return Scaffold(
+        backgroundColor: const Color(0xFF0D1E3A),
+        body: Stack(
+          children: [
+            Positioned.fill(
+              child: Image.asset(
+                'assets/background.png',
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) {
+                  return Container(color: const Color(0xFF0D1E3A));
+                },
+              ),
+            ),
+            Positioned.fill(
+              child: Container(color: Colors.black.withValues(alpha: 0.45)),
+            ),
+            Positioned.fill(
+              child: child,
+            ),
+          ],
+        ),
+      );
     }
     // Windows desktop and web browser: centered container layout
     return Scaffold(
@@ -844,6 +866,68 @@ class _MainPageState extends State<MainPage> {
         if (mounted) UpdateChecker.checkForUpdates(context);
       });
     });
+
+    // Auto-initialize E2EE Keys so they are always configured immediately upon login/startup
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initE2EEKeys();
+    });
+  }
+
+  Future<void> _initE2EEKeys() async {
+    final email = widget.userData?.email.toLowerCase().trim();
+    if (email == null) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      String? localPriv = prefs.getString('e2ee_private_key');
+      String? localPub = prefs.getString('e2ee_public_key');
+
+      if (localPriv == null || localPub == null) {
+        // 1. Check if server has bootstrapped keys for this user
+        final bootstrapUrl = Uri.parse('$apiBaseUrl/api/chat/bootstrap-private-key?email=$email');
+        final response = await http.get(bootstrapUrl);
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data['success'] == true && data['private_key'] != null) {
+            localPriv = data['private_key'];
+            // Since we know the private key, we must also fetch the public key
+            final pubKeyUrl = Uri.parse('$apiBaseUrl/api/chat/public-keys?emails=$email');
+            final pubRes = await http.get(pubKeyUrl);
+            if (pubRes.statusCode == 200) {
+              final pubData = jsonDecode(pubRes.body);
+              final keysList = pubData['keys'] as List;
+              if (keysList.isNotEmpty) {
+                localPub = keysList[0]['public_key'];
+                // Save to local preferences
+                await prefs.setString('e2ee_private_key', localPriv!);
+                await prefs.setString('e2ee_public_key', localPub!);
+                debugPrint('[E2EE] Downloaded and restored bootstrapped keypair.');
+              }
+            }
+          }
+        }
+      }
+
+      // 2. If we still don't have local keys, generate new ones locally
+      if (localPriv == null || localPub == null) {
+        final keys = await CryptoHelper.getOrGenerateKeys();
+        localPriv = keys['private']!;
+        localPub = keys['public']!;
+      }
+
+      // 3. Upload/Refresh public key on the server
+      final url = Uri.parse('$apiBaseUrl/api/chat/public-key');
+      await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email': email,
+          'public_key': localPub,
+        }),
+      );
+      debugPrint('[E2EE] Keys successfully auto-initialized and uploaded.');
+    } catch (e) {
+      debugPrint('[E2EE] Error auto-initializing keys: $e');
+    }
   }
 
   Future<void> _checkProfileCompletion() async {
@@ -1137,8 +1221,8 @@ class SEDSFloatingNavigationBar extends StatelessWidget {
                     duration: const Duration(milliseconds: 300),
                     curve: Curves.easeInOut,
                     padding: EdgeInsets.symmetric(
-                      horizontal: Platform.isWindows ? 22 : 16,
-                      vertical: Platform.isWindows ? 14 : 10,
+                      horizontal: Platform.isWindows ? 22 : 10,
+                      vertical: Platform.isWindows ? 14 : 8,
                     ),
                     margin: const EdgeInsets.symmetric(horizontal: 2),
                     decoration: BoxDecoration(
@@ -1205,12 +1289,12 @@ class SEDSFloatingNavigationBar extends StatelessWidget {
                           child: isSelected
                               ? Row(
                                   children: [
-                                    const SizedBox(width: 8),
+                                    const SizedBox(width: 6),
                                     Text(
                                       item.label,
                                       style: GoogleFonts.poppins(
                                         color: const Color(0xFF0084FF),
-                                        fontSize: Platform.isWindows ? 15 : 12,
+                                        fontSize: Platform.isWindows ? 15 : 10.5,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
