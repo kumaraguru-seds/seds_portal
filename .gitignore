@@ -1,0 +1,125 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Flutter / Dart
+# ─────────────────────────────────────────────────────────────────────────────
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+
+# Dart generated files
+*.g.dart
+*.freezed.dart
+*.mocks.dart
+
+# Dart analysis cache
+.dart-analysis/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Android
+# ─────────────────────────────────────────────────────────────────────────────
+**/android/.gradle
+**/android/captures/
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+**/android/key.properties
+*.jks
+
+# ─────────────────────────────────────────────────────────────────────────────
+# iOS / macOS
+# ─────────────────────────────────────────────────────────────────────────────
+**/ios/**/*.mode1v3
+**/ios/**/*.mode2v3
+**/ios/**/*.moved-aside
+**/ios/**/*.pbxuser
+**/ios/**/*.perspectivev3
+**/ios/**/*sync/
+**/ios/**/.sconsign.dblite
+**/ios/**/.tags*
+**/ios/**/.vagrant/
+**/ios/**/DerivedData/
+**/ios/**/Icon?
+**/ios/**/Pods/
+**/ios/**/.symlinks/
+**/ios/**/profile
+**/ios/**/xcuserdata
+**/ios/.generated/
+**/ios/Flutter/.last_build_id
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/app.flx
+**/ios/Flutter/app.zip
+**/ios/Flutter/flutter_assets/
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Windows
+# ─────────────────────────────────────────────────────────────────────────────
+**/windows/flutter/generated_plugin_registrant.cc
+**/windows/flutter/generated_plugin_registrant.h
+**/windows/flutter/generated_plugins.cmake
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Linux
+# ─────────────────────────────────────────────────────────────────────────────
+**/linux/flutter/generated_plugin_registrant.cc
+**/linux/flutter/generated_plugin_registrant.h
+**/linux/flutter/generated_plugins.cmake
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Web
+# ─────────────────────────────────────────────────────────────────────────────
+# web/index.html is intentionally tracked — do NOT add it here
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IDE & Editor
+# ─────────────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+*.suo
+*.user
+*.sln.docstates
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OS generated
+# ─────────────────────────────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Logs & temp
+# ─────────────────────────────────────────────────────────────────────────────
+*.log
+*.pyc
+*.class
+*.swp
+migrate_working_dir/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Secrets / environment
+# ─────────────────────────────────────────────────────────────────────────────
+.env
+.env.*
+secrets/
+# NOTE: google-services.json & firebase_options.dart must be tracked!
+# Do NOT add them here.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Symbolication / obfuscation artefacts
+# ─────────────────────────────────────────────────────────────────────────────
+app.*.symbols
+app.*.map.json

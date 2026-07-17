@@ -1,0 +1,204 @@
+name: 🚀 Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'            # Triggers on tags like v1.0.1, v2.3.0
+
+env:
+  FLUTTER_VERSION: '3.44.6'   # Matches the locally installed Flutter version
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 1 ─ Build Android APK
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  build-android:
+    name: 🤖 Build Android APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Rename APK with version tag
+        run: |
+          TAG="${{ github.ref_name }}"
+          cp build/app/outputs/flutter-apk/app-release.apk "seds-portal-${TAG}.apk"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: seds-portal-*.apk
+          retention-days: 7
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 2 ─ Build Windows MSIX
+# ─────────────────────────────────────────────────────────────────────────────
+  build-windows:
+    name: 🪟 Build Windows MSIX
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Create MSIX package
+        run: dart run msix:create
+
+      - name: Rename MSIX with version tag
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $msix = Get-ChildItem -Recurse -Filter "*.msix" | Select-Object -First 1
+          if (-not $msix) { Write-Error "No MSIX found!"; exit 1 }
+          $dest = "seds-portal-${tag}.msix"
+          Copy-Item $msix.FullName $dest
+          Write-Output "MSIX built: $dest"
+
+      - name: Upload MSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-msix
+          path: seds-portal-*.msix
+          retention-days: 7
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 3 ─ Build Flutter Web
+# ─────────────────────────────────────────────────────────────────────────────
+  build-web:
+    name: 🌐 Build Flutter Web
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build web release
+        run: flutter build web --release --base-href="/"
+
+      - name: Add CNAME for custom domain
+        run: echo "webportal.kumaraguruseds.space" > build/web/CNAME
+
+      - name: Upload web build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: build/web
+          retention-days: 7
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 4 ─ Create GitHub Release + Deploy Web to GitHub Pages
+# ─────────────────────────────────────────────────────────────────────────────
+  release-and-deploy:
+    name: 📦 Publish Release & Deploy Web
+    needs: [build-android, build-windows, build-web]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Generate version.json
+        run: |
+          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ steps.version.outputs.version }}"
+          REPO="${{ github.repository }}"
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          cat > version.json << EOF
+          {
+            "version": "${VERSION}",
+            "tag": "${TAG}",
+            "android_url": "${BASE}/seds-portal-${TAG}.apk",
+            "windows_url": "${BASE}/seds-portal-${TAG}.msix",
+            "release_notes": "Version ${VERSION} is now available. Update to get the latest features and bug fixes."
+          }
+          EOF
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "SEDS Portal ${{ steps.version.outputs.tag }}"
+          body: |
+            ## 🎓 SEDS Portal ${{ steps.version.outputs.tag }}
+
+            ### 📥 Downloads
+            | Platform | Link |
+            |----------|------|
+            | 📱 Android APK | [seds-portal-${{ steps.version.outputs.tag }}.apk](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/seds-portal-${{ steps.version.outputs.tag }}.apk) |
+            | 🪟 Windows MSIX | [seds-portal-${{ steps.version.outputs.tag }}.msix](https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/seds-portal-${{ steps.version.outputs.tag }}.msix) |
+
+            ### 🌐 Web Portal
+            Live at: [webportal.kumaraguruseds.space](https://webportal.kumaraguruseds.space)
+
+            ---
+            > **Auto-update enabled** — The SEDS Portal app will automatically detect this release on next launch.
+          files: |
+            android-apk/seds-portal-*.apk
+            windows-msix/seds-portal-*.msix
+            version.json
+          generate_release_notes: true
+
+      - name: Deploy web to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: web-build
+          publish_branch: gh-pages
+          cname: webportal.kumaraguruseds.space
+          commit_message: "deploy: web build for ${{ steps.version.outputs.tag }}"

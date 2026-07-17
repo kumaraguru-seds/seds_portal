@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "138971655632",
+    "project_id": "seds-portal",
+    "storage_bucket": "seds-portal.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:138971655632:android:7d319da971e8588ae3ddd5",
+        "android_client_info": {
+          "package_name": "com.example.frontend_fluttter_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyACbPL0KgAq_ogvrQBVq5j7Cla_kmFol_A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
