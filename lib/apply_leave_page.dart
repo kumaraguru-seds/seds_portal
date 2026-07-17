@@ -47,6 +47,7 @@ class _ApplyLeavePageState extends State<ApplyLeavePage> {
       _reasonController.clear();
       _uploadedFileName = null;
       _uploadedFileBytes = null;
+      _selectedLeaveType = 'Leave';
     });
   }
 
@@ -79,6 +80,7 @@ class _ApplyLeavePageState extends State<ApplyLeavePage> {
   List<int>? _uploadedFileBytes;
   bool _isSubmitting = false;
   bool _showForm = false;
+  String _selectedLeaveType = 'Leave'; // 'Leave' or 'On Duty'
 
   // Approval (Lead & Admin)
   List<Map<String, dynamic>> _pendingLeaves = [];
@@ -206,6 +208,7 @@ class _ApplyLeavePageState extends State<ApplyLeavePage> {
       request.fields['date_from'] = DateFormat('yyyy-MM-dd').format(_dateFrom!);
       request.fields['date_to'] = DateFormat('yyyy-MM-dd').format(_dateTo!);
       request.fields['reason'] = _reasonController.text.trim();
+      request.fields['leave_type'] = _selectedLeaveType.toLowerCase();
 
       if (_timeFrom != null) {
         final hh = _timeFrom!.hour.toString().padLeft(2, '0');
@@ -470,7 +473,44 @@ class _ApplyLeavePageState extends State<ApplyLeavePage> {
             const SizedBox(height: 12),
           ],
 
-          // Date range
+          // Leave Type selector
+          Text('Leave Type', style: poppins(color: Colors.white70, fontSize: 12.0)),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.05),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+            ),
+            child: DropdownButtonHideUnderline(
+              child: DropdownButton<String>(
+                value: _selectedLeaveType,
+                dropdownColor: const Color(0xFF1A2B4A),
+                isExpanded: true,
+                style: poppins(color: Colors.white, fontSize: 13.0),
+                items: ['Leave', 'On Duty'].map((t) =>
+                  DropdownMenuItem<String>(
+                    value: t,
+                    child: Row(
+                      children: [
+                        Icon(
+                          t == 'On Duty' ? Icons.work_history_rounded : Icons.event_busy_rounded,
+                          size: 16,
+                          color: t == 'On Duty' ? const Color(0xFF4DA6FF) : const Color(0xFF9B59B6),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(t),
+                      ],
+                    ),
+                  )
+                ).toList(),
+                onChanged: (v) => setState(() => _selectedLeaveType = v ?? 'Leave'),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+
           Row(
             children: [
               Expanded(child: _buildDateField('From Date', _dateFrom, (d) => setState(() => _dateFrom = d), poppins)),

@@ -247,7 +247,7 @@ class _ChatTabState extends State<ChatTab> {
   // Handle room creation modal triggering permission-restricted user lookup
   void _showNewChatDialog() async {
     if (widget.userData == null) return;
-    
+
     // Fetch all users to chat with
     showDialog(
       context: context,
@@ -257,7 +257,8 @@ class _ChatTabState extends State<ChatTab> {
         existingRooms: _rooms,
         myPublicKeyPem: _myPublicKeyPem,
         myPrivateKeyPem: _myPrivateKeyPem,
-        onChatCreated: () {
+        onChatCreated: (roomId, roomKey) {
+          _decryptedRoomKeys[roomId] = roomKey;
           _fetchRooms();
         },
       ),
@@ -351,6 +352,7 @@ class _ChatTabState extends State<ChatTab> {
                               roomTitle: chatTitle,
                               isGroup: isGroup,
                               roomKey: _decryptedRoomKeys[roomId] ?? '',
+                              myPrivateKeyPem: _myPrivateKeyPem,
                               socket: _socket,
                             ),
                           ),
@@ -402,7 +404,7 @@ class _NewChatDialog extends StatefulWidget {
   final List<dynamic> existingRooms;
   final String myPublicKeyPem;
   final String myPrivateKeyPem;
-  final VoidCallback onChatCreated;
+  final Function(String roomId, String roomKey) onChatCreated;
 
   const _NewChatDialog({
     required this.userData,
@@ -465,7 +467,8 @@ class _NewChatDialogState extends State<_NewChatDialog> {
           } else {
             // Members can ONLY search/chat with users in their team (or Admins)
             allowedUsers = allUsers.where((u) {
-              final String uEmail = u['email'].toString().toLowerCase();
+              final String myEmail = widget.userData.email.toLowerCase().trim();
+              final String uEmail = u['email'].toString().toLowerCase().trim();
               if (uEmail == myEmail) return false;
 
               final String uRole = u['role'].toString().toLowerCase();
@@ -476,9 +479,14 @@ class _NewChatDialogState extends State<_NewChatDialog> {
                 return true;
               }
 
-              // Allow if participant shares a team with member
-              if (uTeam != null && (myTeams.contains(uTeam) || uTeam == myTeam)) {
-                return true;
+              // Allow if participant shares a team with member (handling comma-separated lists)
+              if (uTeam != null) {
+                final uTeamsList = uTeam.split(',').map((t) => t.trim().toLowerCase());
+                final myTeamsList = (myTeam ?? '').split(',').map((t) => t.trim().toLowerCase()).toList();
+                myTeamsList.addAll(myTeams.map((t) => t.trim().toLowerCase()));
+
+                final Set<String> shared = uTeamsList.toSet().intersection(myTeamsList.toSet());
+                if (shared.isNotEmpty) return true;
               }
 
               return false;
@@ -538,7 +546,7 @@ class _NewChatDialogState extends State<_NewChatDialog> {
       final keyData = jsonDecode(keyRes.body);
       final keysList = keyData['keys'] as List;
       String otherPublicKeyPem = '';
-      if (keysList.isEmpty) {
+      if (keysList.isEmpty || keysList[0]['public_key'] == null || keysList[0]['public_key'].toString().isEmpty) {
         // Auto-bootstrap a key pair for the recipient on the fly
         final tempPair = CryptoHelper.generateRSAKeyPair();
         final tempPublic = CryptoHelper.publicKeyToPem(tempPair.publicKey);
@@ -595,7 +603,7 @@ class _NewChatDialogState extends State<_NewChatDialog> {
         }),
       );
 
-      widget.onChatCreated();
+      widget.onChatCreated(roomId, plaintextRoomKey);
       if (mounted) {
         Navigator.pop(context);
       }
@@ -723,7 +731,7 @@ class _NewChatDialogState extends State<_NewChatDialog> {
         }),
       );
 
-      widget.onChatCreated();
+      widget.onChatCreated(roomId, plaintextRoomKey);
       if (mounted) {
         Navigator.pop(context);
       }
@@ -902,6 +910,7 @@ class ChatRoomScreen extends StatefulWidget {
   final String roomTitle;
   final bool isGroup;
   final String roomKey;
+  final String myPrivateKeyPem;
   final io.Socket? socket;
 
   const ChatRoomScreen({
@@ -911,6 +920,7 @@ class ChatRoomScreen extends StatefulWidget {
     required this.roomTitle,
     required this.isGroup,
     required this.roomKey,
+    required this.myPrivateKeyPem,
     this.socket,
   });
 
@@ -924,18 +934,54 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
   final TextEditingController _msgCtrl = TextEditingController();
   final ScrollController _scrollCtrl = ScrollController();
 
+  late Function(dynamic) _messageListener;
+  late Function(dynamic) _readReceiptListener;
+
+  bool _isRetryingKey = false;
+  late String _currentRoomKey;
+
   @override
   void initState() {
     super.initState();
+    _currentRoomKey = widget.roomKey;
     _fetchMessages();
     _setupSocketListeners();
+  }
+
+  Future<void> _hotReloadRoomKey() async {
+    if (_isRetryingKey) return;
+    _isRetryingKey = true;
+    try {
+      final url = Uri.parse('$apiBaseUrl/api/chat/room-key?room_id=${widget.roomId}&email=${Uri.encodeComponent(widget.userData.email)}');
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success'] == true) {
+          final String encryptedKey = data['encrypted_key'];
+          final String decryptedKey = CryptoHelper.rsaDecrypt(encryptedKey, widget.myPrivateKeyPem);
+          if (decryptedKey.length == 32 && decryptedKey != _currentRoomKey) {
+            if (mounted) {
+              setState(() {
+                _currentRoomKey = decryptedKey;
+              });
+              debugPrint('[E2EE] Hot-reloaded and synced room key successfully.');
+            }
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[E2EE] Hot-reload key failed: $e');
+    } finally {
+      // Re-enable retry logic so it can self-heal on future updates if keys rotate again
+      _isRetryingKey = false;
+    }
   }
 
   @override
   void dispose() {
     if (widget.socket != null) {
-      widget.socket!.off('receive_chat_message');
-      widget.socket!.off('message_read_receipt');
+      widget.socket!.off('receive_chat_message', _messageListener);
+      widget.socket!.off('message_read_receipt', _readReceiptListener);
       widget.socket!.emit('leave_room', widget.roomId);
     }
     _msgCtrl.dispose();
@@ -947,7 +993,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
     if (widget.socket != null) {
       widget.socket!.emit('join_room', widget.roomId);
 
-      widget.socket!.on('receive_chat_message', (data) {
+      _messageListener = (data) {
         if (data == null) return;
         final msg = data;
         if (msg['room_id'] == widget.roomId) {
@@ -959,12 +1005,12 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
             _markAsSeen(msg);
           }
         }
-      });
+      };
 
-      widget.socket!.on('message_read_receipt', (data) {
+      _readReceiptListener = (data) {
         if (data == null) return;
         final String mId = data['message_id'].toString();
-        
+
         if (mounted) {
           setState(() {
             for (var m in _messages) {
@@ -974,7 +1020,10 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
             }
           });
         }
-      });
+      };
+
+      widget.socket!.on('receive_chat_message', _messageListener);
+      widget.socket!.on('message_read_receipt', _readReceiptListener);
     }
   }
 
@@ -1044,7 +1093,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollCtrl.hasClients) {
         _scrollCtrl.animateTo(
-          _scrollCtrl.position.maxScrollExtent,
+          0.0,
           duration: const Duration(milliseconds: 300),
           curve: Curves.easeOut,
         );
@@ -1062,7 +1111,7 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
     // E2E Encrypt message content locally
     String encryptedText = '';
     if (text.isNotEmpty) {
-      encryptedText = CryptoHelper.aesEncrypt(text, widget.roomKey);
+      encryptedText = CryptoHelper.aesEncrypt(text, _currentRoomKey);
     }
 
     final messagePayload = {
@@ -1153,9 +1202,10 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                       child: ListView.builder(
                         controller: _scrollCtrl,
                         padding: const EdgeInsets.all(16),
+                        reverse: true,
                         itemCount: _messages.length,
                         itemBuilder: (ctx, idx) {
-                          final msg = _messages[idx];
+                          final msg = _messages[_messages.length - 1 - idx];
                           final bool isMe = msg['sender_email'].toString().toLowerCase() == myEmail;
                           final String encryptedContent = msg['encrypted_content'] ?? '';
                           final String? mediaUrl = msg['media_url'];
@@ -1163,7 +1213,10 @@ class _ChatRoomScreenState extends State<ChatRoomScreen> {
                           // Decrypt locally
                           String plaintext = '[Media Attachment]';
                           if (encryptedContent.isNotEmpty) {
-                            plaintext = CryptoHelper.aesDecrypt(encryptedContent, widget.roomKey);
+                            plaintext = CryptoHelper.aesDecrypt(encryptedContent, _currentRoomKey);
+                            if (plaintext == "[Decryption Error: Invalid symmetric key]" && !_isRetryingKey) {
+                              _hotReloadRoomKey();
+                            }
                           }
 
                           final String senderLabel = isMe ? 'You' : '${msg['sender_name']} (${msg['sender_roll_number']})';

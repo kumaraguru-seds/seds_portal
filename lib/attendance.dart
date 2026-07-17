@@ -33,21 +33,121 @@ class _AttendanceTabState extends State<AttendanceTab> {
   // Absence reasons text controllers (rollNumber -> Controller)
   final Map<String, TextEditingController> _reasonControllers = {};
 
+  List<dynamic> _teamLeaves = [];
+  List<String> _myTeams = [];
+
   @override
   void initState() {
     super.initState();
-    final teams = widget.userData?.teams ?? [];
-    if (teams.isNotEmpty) {
-      _selectedTeam = teams.first;
+    final bool isAdmin = widget.userData?.role == 'Admin' || widget.userData?.role == 'SuperAdmin';
+    if (isAdmin) {
+      _loadAdminTeams();
     } else {
-      _selectedTeam = widget.userData?.team ?? '';
+      final teams = widget.userData?.teams ?? [];
+      if (teams.isNotEmpty) {
+        _myTeams = teams;
+      } else {
+        _myTeams = (widget.userData?.team ?? '')
+            .split(',')
+            .map((t) => t.trim())
+            .where((t) => t.isNotEmpty)
+            .toList();
+      }
+      if (_myTeams.isNotEmpty) {
+        _selectedTeam = _myTeams.first;
+      } else {
+        _selectedTeam = widget.userData?.team ?? '';
+      }
+      _fetchData();
     }
-    _fetchData();
+  }
+
+  Future<void> _loadAdminTeams() async {
+    try {
+      final fetched = await fetchUniqueTeams();
+      if (fetched.isNotEmpty && mounted) {
+        setState(() {
+          _myTeams = fetched;
+          _selectedTeam = _myTeams.first;
+        });
+        _fetchData();
+      }
+    } catch (e) {
+      debugPrint('Error loading admin teams: $e');
+    }
   }
 
   Future<void> _fetchData() async {
     await _fetchTeamMembers();
+    await _fetchTeamLeaves();
     await _fetchMeetings();
+  }
+
+  Future<void> _fetchTeamLeaves() async {
+    final team = _selectedTeam;
+    if (team.isEmpty) return;
+    try {
+      final response = await http.get(
+        Uri.parse('$apiBaseUrl/api/leave/team-leaves?team=${Uri.encodeComponent(team)}'),
+      ).timeout(const Duration(seconds: 15));
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        setState(() {
+          _teamLeaves = data['leaves'] ?? [];
+        });
+      }
+    } catch (e) {
+      debugPrint('Error fetching team leaves: $e');
+    }
+  }
+
+  String? _getMemberLeaveStatusOnDate(String rollNumber, String meetingDateStr) {
+    if (meetingDateStr.isEmpty) return null;
+    try {
+      // meetingDateStr can be MM/DD/YYYY or YYYY-MM-DD
+      DateTime meetingDate;
+      if (meetingDateStr.contains('/')) {
+        final parts = meetingDateStr.split('/');
+        if (parts.length == 3) {
+          meetingDate = DateTime(
+            int.parse(parts[2].trim()),
+            int.parse(parts[0].trim()),
+            int.parse(parts[1].trim()),
+          );
+        } else {
+          return null;
+        }
+      } else {
+        meetingDate = DateTime.parse(meetingDateStr.substring(0, 10));
+      }
+
+      // Strip time for clean date-only check
+      meetingDate = DateTime(meetingDate.year, meetingDate.month, meetingDate.day);
+
+      for (var leave in _teamLeaves) {
+        final leaveRoll = leave['roll_number'] ?? '';
+        if (leaveRoll.toString().toLowerCase() != rollNumber.toLowerCase()) continue;
+        
+        final fromStr = leave['date_from'] ?? '';
+        final toStr = leave['date_to'] ?? '';
+        if (fromStr.isEmpty || toStr.isEmpty) continue;
+        
+        DateTime fromDate = DateTime.parse(fromStr.substring(0, 10));
+        DateTime toDate = DateTime.parse(toStr.substring(0, 10));
+        
+        fromDate = DateTime(fromDate.year, fromDate.month, fromDate.day);
+        toDate = DateTime(toDate.year, toDate.month, toDate.day);
+        
+        if (meetingDate.isAtSameMomentAs(fromDate) ||
+            meetingDate.isAtSameMomentAs(toDate) ||
+            (meetingDate.isAfter(fromDate) && meetingDate.isBefore(toDate))) {
+          return leave['status'] ?? 'pending';
+        }
+      }
+    } catch (e) {
+      debugPrint('Error checking leave status on date: $e');
+    }
+    return null;
   }
 
   @override
@@ -61,9 +161,11 @@ class _AttendanceTabState extends State<AttendanceTab> {
   Future<void> _fetchTeamMembers() async {
     final team = _selectedTeam;
     final role = widget.userData?.role;
+    final bool isAdmin = role == 'Admin' || role == 'SuperAdmin';
+    final bool isLead = role == 'Lead' || isAdmin;
 
-    // Attendance is only for Leads (or Admin managing a team)
-    if (role != 'Lead' || team.isEmpty) {
+    // Attendance is only for Leads and Admins managing a team
+    if (!isLead || team.isEmpty) {
       return;
     }
 
@@ -149,10 +251,19 @@ class _AttendanceTabState extends State<AttendanceTab> {
   }
 
   void _resetAttendanceStates() {
+    final meeting = _getSelectedMeeting();
+    final dateStr = meeting?['meeting_date'] ?? '';
     setState(() {
       for (var member in _members) {
         final roll = member['roll_number'] ?? '';
-        _attendanceStatus[roll] = 'Present';
+        final leaveStatus = _getMemberLeaveStatusOnDate(roll, dateStr);
+        if (leaveStatus == 'approved') {
+          _attendanceStatus[roll] = 'On Duty';
+        } else if (leaveStatus == 'pending') {
+          _attendanceStatus[roll] = 'On Duty (Pending)';
+        } else {
+          _attendanceStatus[roll] = 'Present';
+        }
         _reasonControllers[roll]?.clear();
       }
     });
@@ -368,7 +479,8 @@ class _AttendanceTabState extends State<AttendanceTab> {
   @override
   Widget build(BuildContext context) {
     final poppins = GoogleFonts.poppins;
-    final isLead = widget.userData?.role == 'Lead';
+    final bool isAdmin = widget.userData?.role == 'Admin' || widget.userData?.role == 'SuperAdmin';
+    final bool isLead = widget.userData?.role == 'Lead' || isAdmin;
     final teamName = _selectedTeam;
 
     return Scaffold(
@@ -399,7 +511,9 @@ class _AttendanceTabState extends State<AttendanceTab> {
   }
 
   Widget _buildHeaderCard(TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins, bool isLead, String teamName) {
-    final teams = widget.userData?.teams ?? [];
+    final bool isAdmin = widget.userData?.role == 'Admin' || widget.userData?.role == 'SuperAdmin';
+    final bool hasMultipleTeams = _myTeams.length > 1;
+
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -423,7 +537,7 @@ class _AttendanceTabState extends State<AttendanceTab> {
                   ),
                 ),
                 const SizedBox(height: 4),
-                if (isLead && teams.length > 1) ...[
+                if ((isLead || isAdmin) && hasMultipleTeams) ...[
                   DropdownButtonHideUnderline(
                     child: DropdownButton<String>(
                       value: _selectedTeam,
@@ -435,7 +549,7 @@ class _AttendanceTabState extends State<AttendanceTab> {
                         color: const Color(0xFF4DA6FF),
                         fontWeight: FontWeight.bold,
                       ),
-                      items: teams.map((String val) {
+                      items: _myTeams.map((String val) {
                         return DropdownMenuItem<String>(
                           value: val,
                           child: Text('$val Team'),
@@ -451,7 +565,7 @@ class _AttendanceTabState extends State<AttendanceTab> {
                       },
                     ),
                   ),
-                ] else if (isLead && teamName.isNotEmpty) ...[
+                ] else if ((isLead || isAdmin) && teamName.isNotEmpty) ...[
                   Text(
                     '$teamName Team',
                     style: poppins(
@@ -702,21 +816,27 @@ class _AttendanceTabState extends State<AttendanceTab> {
         else if (_isAttendanceSubmittedForSelectedDate)
           _buildSubmittedView(poppins)
         else ...[
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-              childAspectRatio: 0.86, // Sleek, slightly taller aspect ratio to completely avoid bottom overflows
-            ),
-            itemCount: _members.length,
-            itemBuilder: (context, index) {
-              final member = _members[index];
-              return _buildMemberCard(poppins, member);
-            },
-          ),
+          Builder(builder: (context) {
+            double textScale = MediaQuery.textScalerOf(context).scale(1.0);
+            if (textScale < 1.0) textScale = 1.0;
+            final double adjustedRatio = (0.86 / textScale).clamp(0.6, 0.86);
+
+            return GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: 2,
+                crossAxisSpacing: 12,
+                mainAxisSpacing: 12,
+                childAspectRatio: adjustedRatio,
+              ),
+              itemCount: _members.length,
+              itemBuilder: (context, index) {
+                final member = _members[index];
+                return _buildMemberCard(poppins, member);
+              },
+            );
+          }),
           const SizedBox(height: 16),
 
           // ── Submit Button ──
@@ -775,6 +895,13 @@ class _AttendanceTabState extends State<AttendanceTab> {
     final String status = _attendanceStatus[roll] ?? 'Present';
 
     final bool isPresent = status == 'Present';
+    final bool isOnDuty = status == 'On Duty';
+    final bool isOnDutyPending = status == 'On Duty (Pending)';
+    final bool isAbsent = status == 'Absent';
+
+    final meeting = _getSelectedMeeting();
+    final dateStr = meeting?['meeting_date'] ?? '';
+    final leaveStatus = _getMemberLeaveStatusOnDate(roll, dateStr);
 
     return Container(
       decoration: BoxDecoration(
@@ -794,7 +921,13 @@ class _AttendanceTabState extends State<AttendanceTab> {
             width: 4,
             child: Container(
               decoration: BoxDecoration(
-                color: isPresent ? const Color(0xFF00E676) : const Color(0xFFFF5252),
+                color: isPresent
+                    ? const Color(0xFF00E676)
+                    : isOnDuty
+                    ? const Color(0xFF4DA6FF)
+                    : isOnDutyPending
+                    ? const Color(0xFFFFD93D)
+                    : const Color(0xFFFF5252),
                 borderRadius: const BorderRadius.only(
                   topLeft: Radius.circular(20),
                   bottomLeft: Radius.circular(20),
@@ -806,9 +939,11 @@ class _AttendanceTabState extends State<AttendanceTab> {
           // Main Card Content
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 16, 12, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
+            child: SingleChildScrollView(
+              physics: const ClampingScrollPhysics(),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
                 // Profile Image (Rounded square)
                 Container(
                   width: 65,
@@ -855,79 +990,132 @@ class _AttendanceTabState extends State<AttendanceTab> {
                     color: Colors.white.withValues(alpha: 0.5),
                   ),
                 ),
+                
+                // Leave Badge (if leave requested)
+                if (leaveStatus != null) ...[
+                  const SizedBox(height: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: leaveStatus == 'approved'
+                          ? const Color(0xFF4DA6FF).withValues(alpha: 0.15)
+                          : const Color(0xFFFFD93D).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(
+                        color: leaveStatus == 'approved'
+                            ? const Color(0xFF4DA6FF).withValues(alpha: 0.25)
+                            : const Color(0xFFFFD93D).withValues(alpha: 0.25),
+                      ),
+                    ),
+                    child: Text(
+                      leaveStatus == 'approved' ? 'Leave: Approved' : 'Leave: Pending',
+                      style: poppins(
+                        fontSize: 9,
+                        color: leaveStatus == 'approved' ? const Color(0xFF4DA6FF) : const Color(0xFFFFD93D),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 6),
 
-                // Toggle Buttons: P and AB
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    // P (Present) Button
-                    GestureDetector(
-                      onTap: () {
-                        setState(() {
-                          _attendanceStatus[roll] = 'Present';
-                          _reasonControllers[roll]?.clear();
-                        });
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: isPresent
-                              ? const Color(0xFF00E676)
-                              : Colors.white.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
+                // Toggle Buttons: P, AB, or Static Leave Badge
+                if (leaveStatus == 'approved' || leaveStatus == 'pending') ...[
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: leaveStatus == 'approved'
+                          ? const Color(0xFF4DA6FF).withValues(alpha: 0.15)
+                          : const Color(0xFFFFD93D).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: leaveStatus == 'approved'
+                            ? const Color(0xFF4DA6FF).withValues(alpha: 0.3)
+                            : const Color(0xFFFFD93D).withValues(alpha: 0.3),
+                      ),
+                    ),
+                    child: Text(
+                      leaveStatus == 'approved' ? 'ON DUTY (APPROVED)' : 'ON DUTY (PENDING)',
+                      style: poppins(
+                        fontSize: 11,
+                        color: leaveStatus == 'approved' ? const Color(0xFF4DA6FF) : const Color(0xFFFFD93D),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ] else ...[
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      // P (Present) Button
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _attendanceStatus[roll] = 'Present';
+                            _reasonControllers[roll]?.clear();
+                          });
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                          decoration: BoxDecoration(
                             color: isPresent
                                 ? const Color(0xFF00E676)
-                                : Colors.white.withValues(alpha: 0.12),
+                                : Colors.white.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isPresent
+                                  ? const Color(0xFF00E676)
+                                  : Colors.white.withValues(alpha: 0.12),
+                            ),
                           ),
-                        ),
-                        child: Text(
-                          'P',
-                          style: poppins(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: isPresent ? Colors.black : Colors.white70,
+                          child: Text(
+                            'P',
+                            style: poppins(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: isPresent ? Colors.black : Colors.white70,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
+                      const SizedBox(width: 8),
 
-                    // AB (Absent) Button
-                    GestureDetector(
-                      onTap: () {
-                        setState(() {
-                          _attendanceStatus[roll] = 'Absent';
-                        });
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        decoration: BoxDecoration(
-                          color: !isPresent
-                              ? const Color(0xFFFF5252)
-                              : Colors.white.withValues(alpha: 0.08),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(
-                            color: !isPresent
+                      // AB (Absent) Button
+                      GestureDetector(
+                        onTap: () {
+                          setState(() {
+                            _attendanceStatus[roll] = 'Absent';
+                          });
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: isAbsent
                                 ? const Color(0xFFFF5252)
-                                : Colors.white.withValues(alpha: 0.12),
+                                : Colors.white.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isAbsent
+                                  ? const Color(0xFFFF5252)
+                                  : Colors.white.withValues(alpha: 0.12),
+                            ),
                           ),
-                        ),
-                        child: Text(
-                          'AB',
-                          style: poppins(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: !isPresent ? Colors.white : Colors.white70,
+                          child: Text(
+                            'AB',
+                            style: poppins(
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                              color: isAbsent ? Colors.white : Colors.white70,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
+                    ],
+                  ),
+                ],
 
-                if (!isPresent) ...[
+                if (isAbsent) ...[
                   const SizedBox(height: 6),
                   SizedBox(
                     height: 28,
@@ -956,10 +1144,11 @@ class _AttendanceTabState extends State<AttendanceTab> {
               ],
             ),
           ),
-        ],
-      ),
-    );
-  }
+        ),
+      ],
+    ),
+  );
+}
 
   Widget _buildMeetingManagementCard(
     TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins,
@@ -1008,7 +1197,7 @@ class _AttendanceTabState extends State<AttendanceTab> {
 
   void _showNewMeetingDialog(BuildContext context) {
     final poppins = GoogleFonts.poppins;
-    final teamName = widget.userData?.team ?? 'Media';
+    String selectedMeetingTeam = _selectedTeam.isNotEmpty ? _selectedTeam : (widget.userData?.team ?? 'Media');
     
     String meetingMode = 'OFFLINE';
     String selectedDate = '';
@@ -1075,19 +1264,54 @@ class _AttendanceTabState extends State<AttendanceTab> {
                           style: poppins(fontSize: 11, fontWeight: FontWeight.bold, color: Colors.white60),
                         ),
                         const SizedBox(height: 6),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.05),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(color: Colors.white12),
-                          ),
-                          child: Text(
-                            teamName,
-                            style: poppins(fontSize: 15, color: const Color(0xFF4DA6FF), fontWeight: FontWeight.bold),
-                          ),
-                        ),
+                        _myTeams.length > 1
+                            ? Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.05),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: Colors.white12),
+                                ),
+                                child: DropdownButtonHideUnderline(
+                                  child: DropdownButton<String>(
+                                    value: selectedMeetingTeam,
+                                    isExpanded: true,
+                                    dropdownColor: const Color(0xFF0D1E3A),
+                                    icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF4DA6FF)),
+                                    style: poppins(
+                                      fontSize: 15,
+                                      color: const Color(0xFF4DA6FF),
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                    items: _myTeams.map((String val) {
+                                      return DropdownMenuItem<String>(
+                                        value: val,
+                                        child: Text(val),
+                                      );
+                                    }).toList(),
+                                    onChanged: (val) {
+                                      if (val != null) {
+                                        setModalState(() {
+                                          selectedMeetingTeam = val;
+                                        });
+                                      }
+                                    },
+                                  ),
+                                ),
+                              )
+                            : Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                                decoration: BoxDecoration(
+                                  color: Colors.white.withValues(alpha: 0.05),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: Colors.white12),
+                                ),
+                                child: Text(
+                                  selectedMeetingTeam,
+                                  style: poppins(fontSize: 15, color: const Color(0xFF4DA6FF), fontWeight: FontWeight.bold),
+                                ),
+                              ),
                         const SizedBox(height: 16),
 
                         // MEETING MODE
@@ -1403,7 +1627,7 @@ class _AttendanceTabState extends State<AttendanceTab> {
                               if (formKey.currentState!.validate()) {
                                 _showConfirmationDialog(
                                   context,
-                                  teamName: teamName,
+                                  teamName: selectedMeetingTeam,
                                   mode: meetingMode,
                                   date: selectedDate,
                                   start: startTime,
@@ -1562,7 +1786,18 @@ class _AttendanceTabState extends State<AttendanceTab> {
               final roll = rec['roll_number'] ?? '';
               final status = rec['status'] ?? 'Present';
               final reason = rec['reason'] ?? '';
-              final isPresent = status == 'Present';
+              final isPresent = status.toLowerCase() == 'present';
+              final isOnDuty = status.toLowerCase() == 'on duty' || status.toLowerCase() == 'on_duty';
+              final isOnDutyPending = status.toLowerCase() == 'on duty (pending)' || status.toLowerCase() == 'on_duty_pending';
+
+              // Color theme per status
+              final Color statusColor = isPresent
+                  ? const Color(0xFF00E676)
+                  : isOnDuty
+                  ? const Color(0xFF4DA6FF)
+                  : isOnDutyPending
+                  ? const Color(0xFFFFD93D)
+                  : Colors.redAccent;
 
               return Container(
                 margin: const EdgeInsets.only(bottom: 10),
@@ -1595,14 +1830,10 @@ class _AttendanceTabState extends State<AttendanceTab> {
                         Container(
                           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                           decoration: BoxDecoration(
-                            color: isPresent 
-                              ? const Color(0xFF00E676).withValues(alpha: 0.15) 
-                              : Colors.redAccent.withValues(alpha: 0.15),
+                            color: statusColor.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(8),
                             border: Border.all(
-                              color: isPresent 
-                                ? const Color(0xFF00E676).withValues(alpha: 0.3) 
-                                : Colors.redAccent.withValues(alpha: 0.3),
+                              color: statusColor.withValues(alpha: 0.3),
                             ),
                           ),
                           child: Text(
@@ -1610,13 +1841,13 @@ class _AttendanceTabState extends State<AttendanceTab> {
                             style: poppins(
                               fontSize: 11, 
                               fontWeight: FontWeight.bold, 
-                              color: isPresent ? const Color(0xFF00E676) : Colors.redAccent
+                              color: statusColor
                             ),
                           ),
                         ),
                       ],
                     ),
-                    if (!isPresent && reason.isNotEmpty) ...[
+                    if (!isPresent && !isOnDuty && !isOnDutyPending && reason.isNotEmpty) ...[
                       const SizedBox(height: 10),
                       Container(
                         width: double.infinity,

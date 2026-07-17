@@ -4,10 +4,12 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'main.dart';
+import 'analyse_users_page.dart';
 
 class StatisticsPage extends StatefulWidget {
   final UserData? userData;
-  const StatisticsPage({super.key, this.userData});
+  final bool isActive;
+  const StatisticsPage({super.key, this.userData, this.isActive = false});
 
   @override
   State<StatisticsPage> createState() => _StatisticsPageState();
@@ -22,6 +24,18 @@ class _StatisticsPageState extends State<StatisticsPage>
   final TextEditingController _searchCtrl = TextEditingController();
   late AnimationController _animCtrl;
   late Animation<double> _anim;
+
+  List<String> _leadTeams = [];
+  String _selectedStatsTeam = 'All';
+  int _selectedBarIndex = -1;
+
+  @override
+  void didUpdateWidget(covariant StatisticsPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isActive && !oldWidget.isActive) {
+      _animCtrl.forward(from: 0);
+    }
+  }
 
   bool get _isAdmin => widget.userData?.role.toLowerCase() == 'admin';
   bool get _isLead => widget.userData?.role.toLowerCase() == 'lead';
@@ -50,10 +64,98 @@ class _StatisticsPageState extends State<StatisticsPage>
     setState(() => _isLoading = true);
     try {
       String url = '$apiBaseUrl/api/stats/performance-summary';
-      if (_isLead && widget.userData?.team != null) {
-        url += '?team=${Uri.encodeComponent(widget.userData?.team ?? '')}';
-      } else if (_isMember) {
-        url += '?team=${Uri.encodeComponent(widget.userData?.team ?? '')}';
+
+      final userTeams = widget.userData?.teams ?? [];
+
+      if (_isMember) {
+        final memberTeams = (widget.userData?.team ?? '')
+            .split(',')
+            .map((t) => t.trim())
+            .where((t) => t.isNotEmpty)
+            .toList();
+
+        if (memberTeams.length > 1) {
+          final List<Map<String, dynamic>> combined = [];
+          for (final t in memberTeams) {
+            final teamUrl =
+                '$apiBaseUrl/api/stats/performance-summary?team=${Uri.encodeComponent(t)}';
+            final teamRes = await http
+                .get(Uri.parse(teamUrl))
+                .timeout(const Duration(seconds: 20));
+            if (teamRes.statusCode == 200) {
+              final teamData = jsonDecode(teamRes.body);
+              final teamUsers = List<Map<String, dynamic>>.from(
+                teamData['users'] ?? [],
+              );
+              final myEntry = teamUsers
+                  .where(
+                    (u) =>
+                        (u['email'] as String? ?? '').toLowerCase() ==
+                        (widget.userData?.email ?? '').toLowerCase(),
+                  )
+                  .toList();
+              combined.addAll(myEntry);
+            }
+          }
+          if (mounted) {
+            setState(() {
+              _allUsers = combined;
+              _filtered = combined;
+            });
+            _animCtrl.forward(from: 0);
+          }
+          return;
+        }
+
+        url +=
+            '?team=${Uri.encodeComponent(memberTeams.isNotEmpty ? memberTeams.first : '')}';
+      } else if (_isLead || (_isAdmin && userTeams.isNotEmpty)) {
+        final teamList = (widget.userData?.team ?? '')
+            .split(',')
+            .map((t) => t.trim())
+            .where((t) => t.isNotEmpty)
+            .toList();
+
+        if (mounted) {
+          setState(() {
+            _leadTeams = teamList;
+          });
+        }
+
+        if (teamList.length > 1) {
+          final List<Map<String, dynamic>> combined = [];
+          final Set<String> seen = {};
+          for (final t in teamList) {
+            final teamUrl =
+                '$apiBaseUrl/api/stats/performance-summary?team=${Uri.encodeComponent(t)}';
+            final teamRes = await http
+                .get(Uri.parse(teamUrl))
+                .timeout(const Duration(seconds: 20));
+            if (teamRes.statusCode == 200) {
+              final teamData = jsonDecode(teamRes.body);
+              final teamUsers = List<Map<String, dynamic>>.from(
+                teamData['users'] ?? [],
+              );
+              for (var tu in teamUsers) {
+                final key = '${tu['email']}_${tu['team']}'.toLowerCase();
+                if (!seen.contains(key)) {
+                  seen.add(key);
+                  combined.add(tu);
+                }
+              }
+            }
+          }
+          if (mounted) {
+            setState(() {
+              _allUsers = combined;
+              _filtered = combined;
+            });
+            _animCtrl.forward(from: 0);
+          }
+          return;
+        }
+        url +=
+            '?team=${Uri.encodeComponent(teamList.isNotEmpty ? teamList.first : '')}';
       }
 
       final res = await http
@@ -90,16 +192,23 @@ class _StatisticsPageState extends State<StatisticsPage>
     }
   }
 
-  void _onSearch(String query) {
+  void _applyStatsFilter() {
     setState(() {
-      _searchQuery = query.toLowerCase();
       _filtered = _allUsers.where((u) {
         final name = (u['name'] as String? ?? '').toLowerCase();
         final team = (u['team'] as String? ?? '').toLowerCase();
         final roll = (u['roll_number'] as String? ?? '').toLowerCase();
-        return name.contains(_searchQuery) ||
+        final matchesSearch =
+            name.contains(_searchQuery) ||
             team.contains(_searchQuery) ||
             roll.contains(_searchQuery);
+
+        final matchesTeam =
+            _selectedStatsTeam == 'All' ||
+            team.trim().toLowerCase() ==
+                _selectedStatsTeam.trim().toLowerCase();
+
+        return matchesSearch && matchesTeam;
       }).toList();
     });
   }
@@ -109,6 +218,22 @@ class _StatisticsPageState extends State<StatisticsPage>
     final m = (s % 3600) ~/ 60;
     final sec = s % 60;
     return '${h}h ${m}m ${sec}s';
+  }
+
+  void _showUserAnalysis(String? email) {
+    if (email == null || email.isEmpty) return;
+    if (_isMember) return; // Members cannot inspect others
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DesktopPageWrapper(
+          child: AnalyseUsersPage(
+            userData: widget.userData,
+            initialUserEmail: email,
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -172,7 +297,10 @@ class _StatisticsPageState extends State<StatisticsPage>
                             ),
                             if (_isLead)
                               Text(
-                                widget.userData?.team ?? '',
+                                (widget.userData?.team ?? '')
+                                    .split(',')
+                                    .map((t) => t.trim())
+                                    .join(' · '),
                                 style: poppins(
                                   fontSize: 11.0,
                                   color: Colors.white54,
@@ -203,48 +331,102 @@ class _StatisticsPageState extends State<StatisticsPage>
                   ),
                 ),
 
-                // Search bar (Admin & Lead)
+                // Search & Filter (Admin & Lead)
                 if (!_isMember)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-                    child: TextField(
-                      controller: _searchCtrl,
-                      onChanged: _onSearch,
-                      style: poppins(color: Colors.white, fontSize: 13.0),
-                      decoration: InputDecoration(
-                        hintText: 'Search by name, team, roll no...',
-                        hintStyle: poppins(
-                          color: Colors.white38,
-                          fontSize: 12.0,
+                    child: Column(
+                      children: [
+                        TextField(
+                          controller: _searchCtrl,
+                          onChanged: (val) {
+                            _searchQuery = val.toLowerCase();
+                            _applyStatsFilter();
+                          },
+                          style: poppins(color: Colors.white, fontSize: 13.0),
+                          decoration: InputDecoration(
+                            hintText: 'Search by name, team, roll no...',
+                            hintStyle: poppins(
+                              color: Colors.white38,
+                              fontSize: 12.0,
+                            ),
+                            prefixIcon: const Icon(
+                              Icons.search_rounded,
+                              color: Colors.white54,
+                              size: 20,
+                            ),
+                            suffixIcon: _searchQuery.isNotEmpty
+                                ? IconButton(
+                                    onPressed: () {
+                                      _searchCtrl.clear();
+                                      _searchQuery = '';
+                                      _applyStatsFilter();
+                                    },
+                                    icon: const Icon(
+                                      Icons.close_rounded,
+                                      color: Colors.white54,
+                                      size: 18,
+                                    ),
+                                  )
+                                : null,
+                            filled: true,
+                            fillColor: Colors.white.withValues(alpha: 0.06),
+                            contentPadding: const EdgeInsets.symmetric(
+                              vertical: 10,
+                            ),
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(12),
+                              borderSide: BorderSide.none,
+                            ),
+                          ),
                         ),
-                        prefixIcon: const Icon(
-                          Icons.search_rounded,
-                          color: Colors.white54,
-                          size: 20,
-                        ),
-                        suffixIcon: _searchQuery.isNotEmpty
-                            ? IconButton(
-                                onPressed: () {
-                                  _searchCtrl.clear();
-                                  _onSearch('');
-                                },
+                        if (_leadTeams.length > 1) ...[
+                          const SizedBox(height: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.06),
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.1),
+                              ),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _selectedStatsTeam,
+                                isExpanded: true,
+                                dropdownColor: const Color(0xFF1A2B4A),
                                 icon: const Icon(
-                                  Icons.close_rounded,
-                                  color: Colors.white54,
+                                  Icons.keyboard_arrow_down,
+                                  color: Color(0xFF4DA6FF),
                                   size: 18,
                                 ),
-                              )
-                            : null,
-                        filled: true,
-                        fillColor: Colors.white.withValues(alpha: 0.06),
-                        contentPadding: const EdgeInsets.symmetric(
-                          vertical: 10,
-                        ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          borderSide: BorderSide.none,
-                        ),
-                      ),
+                                items: ['All', ..._leadTeams]
+                                    .map(
+                                      (t) => DropdownMenuItem(
+                                        value: t,
+                                        child: Text(
+                                          t == 'All' ? 'All Teams' : '$t Team',
+                                          style: poppins(
+                                            fontSize: 12,
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ),
+                                    )
+                                    .toList(),
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setState(() => _selectedStatsTeam = val);
+                                    _applyStatsFilter();
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
 
@@ -286,10 +468,37 @@ class _StatisticsPageState extends State<StatisticsPage>
                                       physics:
                                           const AlwaysScrollableScrollPhysics(),
                                       children: [
-                                        _buildMemberDashboard(
-                                          _filtered.first,
-                                          poppins,
+                                        // Show per-team stats for every entry
+                                        // (multi-team members have multiple entries)
+                                        ..._filtered.map(
+                                          (u) =>
+                                              _buildMemberDashboard(u, poppins),
                                         ),
+                                        if (_filtered.isNotEmpty) ...[
+                                          const SizedBox(height: 8),
+                                          _buildMemberGraphCard(
+                                            _filtered.first['total_seconds']
+                                                    as int? ??
+                                                0,
+                                            _filtered.first['week_seconds']
+                                                    as int? ??
+                                                0,
+                                            ((_filtered.first['total_sessions']
+                                                            as int? ??
+                                                        0) >
+                                                    0)
+                                                ? ((_filtered.first['total_seconds']
+                                                                  as int? ??
+                                                              0) /
+                                                          (_filtered.first['total_sessions']
+                                                                  as int? ??
+                                                              1))
+                                                      .round()
+                                                : 0,
+                                            poppins,
+                                          ),
+                                          const SizedBox(height: 16),
+                                        ],
                                       ],
                                     )
                                   : ListView(
@@ -302,11 +511,9 @@ class _StatisticsPageState extends State<StatisticsPage>
                                       physics:
                                           const AlwaysScrollableScrollPhysics(),
                                       children: [
-                                        // Lead overview dashboard header
-                                        if (_isLead) ...[
-                                          _buildLeadDashboardHeader(
-                                            poppins,
-                                          ),
+                                        // Lead/Admin overview dashboard header
+                                        if (_isLead || _isAdmin) ...[
+                                          _buildLeadDashboardHeader(poppins),
                                           const SizedBox(height: 8),
                                         ],
 
@@ -358,73 +565,168 @@ class _StatisticsPageState extends State<StatisticsPage>
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.05),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.2),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            'Work Hours — Top $displayCount',
-            style: poppins(
-              color: Colors.white,
-              fontWeight: FontWeight.bold,
-              fontSize: 13.0,
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Work Hours — Top $displayCount Performance',
+                style: poppins(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13.0,
+                ),
+              ),
+              if (_selectedBarIndex != -1 &&
+                  _selectedBarIndex < topUsers.length)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF4DA6FF).withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: const Color(0xFF4DA6FF).withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Text(
+                    '${topUsers[_selectedBarIndex]['name'].split(' ').first}: ${_fmtSeconds((topUsers[_selectedBarIndex]['total_seconds'] as int? ?? 0))}',
+                    style: poppins(
+                      color: const Color(0xFF4DA6FF),
+                      fontSize: 10.0,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+            ],
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 20),
           SizedBox(
-            height: 140,
+            height: 220,
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: topUsers.asMap().entries.map((entry) {
                 final u = entry.value;
                 final sec = (u['total_seconds'] as int? ?? 0).toDouble();
                 final ratio = maxSec > 0 ? (sec / maxSec) : 0.0;
-                final barH = (ratio * 110 * _anim.value).clamp(4.0, 110.0);
+                final isSelected = _selectedBarIndex == entry.key;
+
+                final barH = (ratio * 150 * _anim.value).clamp(6.0, 150.0);
+
                 final colors = [
-                  [const Color(0xFF4DA6FF), const Color(0xFF2D8BE8)],
-                  [const Color(0xFF00C48C), const Color(0xFF00A070)],
-                  [const Color(0xFFFFD93D), const Color(0xFFF0C020)],
-                  [const Color(0xFF9B59B6), const Color(0xFF7D3F9A)],
-                  [const Color(0xFFFF6B6B), const Color(0xFFE05050)],
-                  [const Color(0xFF4DA6FF), const Color(0xFF2D8BE8)],
-                  [const Color(0xFF00C48C), const Color(0xFF00A070)],
-                  [const Color(0xFFFFD93D), const Color(0xFFF0C020)],
+                  [const Color(0xFF4DA6FF), const Color(0xFF007FFF)],
+                  [const Color(0xFF00C48C), const Color(0xFF00966C)],
+                  [const Color(0xFFFFD93D), const Color(0xFFFFB300)],
+                  [const Color(0xFF9B59B6), const Color(0xFF8E44AD)],
+                  [const Color(0xFFFF6B6B), const Color(0xFFE74C3C)],
+                  [const Color(0xFF00E676), const Color(0xFF00B0FF)],
+                  [const Color(0xFF1ABC9C), const Color(0xFF16A085)],
+                  [const Color(0xFFE67E22), const Color(0xFFD35400)],
                 ];
                 final colPair = colors[entry.key % colors.length];
                 final name = (u['name'] as String? ?? '').split(' ').first;
+
                 return Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 2),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        Text(
-                          _fmtSeconds(sec.toInt()),
-                          style: poppins(color: Colors.white70, fontSize: 8.0),
-                          textAlign: TextAlign.center,
-                        ),
-                        const SizedBox(height: 3),
-                        Container(
-                          height: barH,
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              begin: Alignment.topCenter,
-                              end: Alignment.bottomCenter,
-                              colors: colPair,
+                  child: GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _selectedBarIndex = isSelected ? -1 : entry.key;
+                      });
+                    },
+                    behavior: HitTestBehavior.opaque,
+                    child: AnimatedScale(
+                      scale: isSelected ? 1.05 : 1.0,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeOut,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            Text(
+                              _fmtSeconds(sec.toInt()),
+                              style: poppins(
+                                color: isSelected
+                                    ? const Color(0xFF4DA6FF)
+                                    : Colors.white70,
+                                fontSize: isSelected ? 9.5 : 8.0,
+                                fontWeight: isSelected
+                                    ? FontWeight.bold
+                                    : FontWeight.w500,
+                              ),
+                              textAlign: TextAlign.center,
                             ),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
+                            const SizedBox(height: 6),
+                            Container(
+                              height: barH,
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  colors: isSelected
+                                      ? [
+                                          const Color(0xFF00DFFF),
+                                          const Color(0xFF0084FF),
+                                        ]
+                                      : colPair,
+                                ),
+                                borderRadius: BorderRadius.circular(8),
+                                border: isSelected
+                                    ? Border.all(
+                                        color: Colors.white,
+                                        width: 1.5,
+                                      )
+                                    : Border.all(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.1,
+                                        ),
+                                        width: 0.8,
+                                      ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color:
+                                        (isSelected
+                                                ? const Color(0xFF00DFFF)
+                                                : colPair.first)
+                                            .withValues(
+                                              alpha: isSelected ? 0.6 : 0.25,
+                                            ),
+                                    blurRadius: isSelected ? 12 : 6,
+                                    spreadRadius: isSelected ? 2 : 0,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              name,
+                              style: poppins(
+                                color: isSelected
+                                    ? const Color(0xFF4DA6FF)
+                                    : Colors.white,
+                                fontSize: isSelected ? 9.5 : 8.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 4),
-                        Text(
-                          name,
-                          style: poppins(color: Colors.white54, fontSize: 8.0),
-                          textAlign: TextAlign.center,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
+                      ),
                     ),
                   ),
                 );
@@ -437,89 +739,95 @@ class _StatisticsPageState extends State<StatisticsPage>
   }
 
   Widget _buildTopPerformerCard(Map<String, dynamic> u, dynamic poppins) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            const Color(0xFFFFD93D).withValues(alpha: 0.12),
-            const Color(0xFF4DA6FF).withValues(alpha: 0.08),
-          ],
+    return GestureDetector(
+      onTap: () => _showUserAnalysis(u['email'] as String?),
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              const Color(0xFFFFD93D).withValues(alpha: 0.12),
+              const Color(0xFF4DA6FF).withValues(alpha: 0.08),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: const Color(0xFFFFD93D).withValues(alpha: 0.3),
+          ),
         ),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: const Color(0xFFFFD93D).withValues(alpha: 0.3),
-        ),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              color: const Color(0xFFFFD93D).withValues(alpha: 0.15),
-              shape: BoxShape.circle,
-            ),
-            child: const Center(
-              child: Icon(
-                Icons.workspace_premium_rounded,
-                color: Color(0xFFFFD93D),
-                size: 26,
+        child: Row(
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFD93D).withValues(alpha: 0.15),
+                shape: BoxShape.circle,
+              ),
+              child: const Center(
+                child: Icon(
+                  Icons.workspace_premium_rounded,
+                  color: Color(0xFFFFD93D),
+                  size: 26,
+                ),
               ),
             ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      'Top Performer',
-                      style: poppins(
-                        color: const Color(0xFFFFD93D),
-                        fontSize: 11.0,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 6,
-                        vertical: 2,
-                      ),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFD93D).withValues(alpha: 0.15),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        u['role'] as String? ?? '',
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'Top Performer',
                         style: poppins(
                           color: const Color(0xFFFFD93D),
-                          fontSize: 9.0,
+                          fontSize: 11.0,
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
-                    ),
-                  ],
-                ),
-                Text(
-                  u['name'] as String? ?? '',
-                  style: poppins(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 14.0,
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(
+                            0xFFFFD93D,
+                          ).withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          u['role'] as String? ?? '',
+                          style: poppins(
+                            color: const Color(0xFFFFD93D),
+                            fontSize: 9.0,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                Text(
-                  '${u['team'] ?? ''} · ${_fmtSeconds(u['total_seconds'] as int? ?? 0)} worked',
-                  style: poppins(color: Colors.white70, fontSize: 11.0),
-                ),
-              ],
+                  Text(
+                    u['name'] as String? ?? '',
+                    style: poppins(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14.0,
+                    ),
+                  ),
+                  Text(
+                    '${u['team'] ?? ''} · ${_fmtSeconds(u['total_seconds'] as int? ?? 0)} worked',
+                    style: poppins(color: Colors.white70, fontSize: 11.0),
+                  ),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -551,132 +859,171 @@ class _StatisticsPageState extends State<StatisticsPage>
     return AnimatedBuilder(
       animation: _anim,
       builder: (context, child) {
-        return Container(
-          margin: const EdgeInsets.only(bottom: 10),
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.04),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 28,
-                    height: 28,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: rankColor.withValues(alpha: 0.12),
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: rankColor.withValues(alpha: 0.3),
+        return GestureDetector(
+          onTap: () => _showUserAnalysis(u['email'] as String?),
+          behavior: HitTestBehavior.opaque,
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.04),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.07)),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Container(
+                      width: 24,
+                      height: 24,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: rankColor.withValues(alpha: 0.12),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: rankColor.withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Text(
+                        '${rank + 1}',
+                        style: poppins(
+                          color: rankColor,
+                          fontSize: 10.0,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
-                    child: Text(
-                      '${rank + 1}',
-                      style: poppins(
-                        color: rankColor,
-                        fontSize: 11.0,
-                        fontWeight: FontWeight.bold,
-                      ),
+                    const SizedBox(width: 8),
+                    CircleAvatar(
+                      radius: 16,
+                      backgroundColor: Colors.white.withValues(alpha: 0.08),
+                      backgroundImage:
+                          u['image_url'] != null &&
+                              u['image_url'].toString().isNotEmpty
+                          ? NetworkImage(u['image_url'])
+                          : null,
+                      child:
+                          u['image_url'] != null &&
+                              u['image_url'].toString().isNotEmpty
+                          ? null
+                          : Text(
+                              (u['name'] as String? ?? 'S')
+                                  .substring(0, 1)
+                                  .toUpperCase(),
+                              style: poppins(
+                                color: Colors.white70,
+                                fontSize: 10.0,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          u['name'] as String? ?? '',
-                          style: poppins(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13.0,
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            u['name'] as String? ?? '',
+                            style: poppins(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13.0,
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        Text(
-                          '${u['team'] ?? ''} · ${u['roll_number'] ?? ''}',
-                          style: poppins(color: Colors.white54, fontSize: 10.0),
-                        ),
-                      ],
-                    ),
-                  ),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 3,
-                    ),
-                    decoration: BoxDecoration(
-                      color: _roleColor(
-                        u['role'] as String? ?? '',
-                      ).withValues(alpha: 0.12),
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Text(
-                      u['role'] as String? ?? '',
-                      style: poppins(
-                        color: _roleColor(u['role'] as String? ?? ''),
-                        fontSize: 10.0,
-                        fontWeight: FontWeight.bold,
+                          Text(
+                            '${u['team'] ?? ''} · ${u['roll_number'] ?? ''}',
+                            style: poppins(
+                              color: Colors.white54,
+                              fontSize: 10.0,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: _roleColor(
+                          u['role'] as String? ?? '',
+                        ).withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        u['role'] as String? ?? '',
+                        style: poppins(
+                          color: _roleColor(u['role'] as String? ?? ''),
+                          fontSize: 10.0,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
 
-              // Work hours bar
-              _buildStatBar(
-                'Work Hours',
-                _fmtSeconds(totalSec),
-                barRatio * _anim.value,
-                const Color(0xFF4DA6FF),
-                poppins,
-              ),
-              const SizedBox(height: 6),
-              // Attendance bar
-              _buildStatBar(
-                'Attendance',
-                '${attPct.toStringAsFixed(1)}% ($attPresent/$attTotal)',
-                attRatio * _anim.value,
-                attPct >= 75
-                    ? const Color(0xFF00C48C)
-                    : const Color(0xFFFF6B6B),
-                poppins,
-              ),
+                // Work hours bar
+                _buildStatBar(
+                  'Work Hours',
+                  _fmtSeconds(totalSec),
+                  barRatio * _anim.value,
+                  const Color(0xFF4DA6FF),
+                  poppins,
+                ),
+                const SizedBox(height: 6),
+                // Attendance bar
+                Builder(
+                  builder: (context) {
+                    final int attOnDuty = u['attendance_on_duty'] as int? ?? 0;
+                    final String displayStats = attOnDuty > 0
+                        ? '$attPresent/$attTotal | $attOnDuty OD'
+                        : '$attPresent/$attTotal';
+                    return _buildStatBar(
+                      'Attendance',
+                      '${attPct.toStringAsFixed(1)}% ($displayStats)',
+                      attRatio * _anim.value,
+                      attPct >= 75
+                          ? const Color(0xFF00C48C)
+                          : const Color(0xFFFF6B6B),
+                      poppins,
+                    );
+                  },
+                ),
 
-              const SizedBox(height: 10),
+                const SizedBox(height: 10),
 
-              // Stat chips
-              Row(
-                children: [
-                  _chip(
-                    '$sessions',
-                    'Sessions',
-                    const Color(0xFF9B59B6),
-                    poppins,
-                  ),
-                  const SizedBox(width: 6),
-                  _chip(
-                    '$loginCount',
-                    'Logins',
-                    const Color(0xFFFFD93D),
-                    poppins,
-                  ),
-                  const SizedBox(width: 6),
-                  _chip(
-                    _fmtSeconds(weekSec),
-                    'This Week',
-                    const Color(0xFF00C48C),
-                    poppins,
-                  ),
-                ],
-              ),
-            ],
+                // Stat chips
+                Row(
+                  children: [
+                    _chip(
+                      '$sessions',
+                      'Sessions',
+                      const Color(0xFF9B59B6),
+                      poppins,
+                    ),
+                    const SizedBox(width: 6),
+                    _chip(
+                      '$loginCount',
+                      'Logins',
+                      const Color(0xFFFFD93D),
+                      poppins,
+                    ),
+                    const SizedBox(width: 6),
+                    _chip(
+                      _fmtSeconds(weekSec),
+                      'This Week',
+                      const Color(0xFF00C48C),
+                      poppins,
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
         );
       },
@@ -695,24 +1042,31 @@ class _StatisticsPageState extends State<StatisticsPage>
       children: [
         Row(
           children: [
-            Text(label, style: poppins(color: Colors.white70, fontSize: 10.0)),
+            Text(
+              label,
+              style: poppins(
+                color: Colors.white70,
+                fontSize: 11.0,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
             const Spacer(),
             Text(
               value,
               style: poppins(
                 color: Colors.white,
-                fontSize: 10.0,
-                fontWeight: FontWeight.bold,
+                fontSize: 12.0,
+                fontWeight: FontWeight.w900,
               ),
             ),
           ],
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 5),
         ClipRRect(
-          borderRadius: BorderRadius.circular(4),
+          borderRadius: BorderRadius.circular(5),
           child: LinearProgressIndicator(
             value: ratio.clamp(0.0, 1.0),
-            minHeight: 5,
+            minHeight: 10,
             backgroundColor: Colors.white.withValues(alpha: 0.07),
             valueColor: AlwaysStoppedAnimation<Color>(color),
           ),
@@ -765,144 +1119,185 @@ class _StatisticsPageState extends State<StatisticsPage>
     final attPct = (u['attendance_pct'] as num? ?? 100.0).toDouble();
     final attPresent = u['attendance_present'] as int? ?? 0;
     final attTotal = u['attendance_total'] as int? ?? 0;
+    final teamLabel = u['team'] as String? ?? '';
 
     // Calculate average session duration
     final avgSec = sessions > 0 ? (totalSec / sessions).round() : 0;
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // User Card Profile Header
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [
-                  const Color(0xFF4DA6FF).withValues(alpha: 0.15),
-                  const Color(0xFF9B59B6).withValues(alpha: 0.1),
-                ],
-              ),
-              borderRadius: BorderRadius.circular(18),
-              border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // User Card Profile Header with team badge
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [
+                const Color(0xFF4DA6FF).withValues(alpha: 0.15),
+                const Color(0xFF9B59B6).withValues(alpha: 0.1),
+              ],
             ),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 24,
-                  backgroundColor: const Color(
-                    0xFF4DA6FF,
-                  ).withValues(alpha: 0.2),
-                  child: Text(
-                    (u['name'] as String? ?? 'S').substring(0, 1).toUpperCase(),
-                    style: poppins(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 18.0,
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        u['name'] as String? ?? '',
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+          ),
+          child: Row(
+            children: [
+              CircleAvatar(
+                radius: 24,
+                backgroundColor: const Color(0xFF4DA6FF).withValues(alpha: 0.2),
+                backgroundImage:
+                    u['image_url'] != null &&
+                        u['image_url'].toString().isNotEmpty
+                    ? NetworkImage(u['image_url'])
+                    : null,
+                child:
+                    u['image_url'] != null &&
+                        u['image_url'].toString().isNotEmpty
+                    ? null
+                    : Text(
+                        (u['name'] as String? ?? 'S')
+                            .substring(0, 1)
+                            .toUpperCase(),
                         style: poppins(
                           color: Colors.white,
                           fontWeight: FontWeight.bold,
-                          fontSize: 15.0,
+                          fontSize: 18.0,
                         ),
                       ),
-                      Text(
-                        '${u['role'] ?? 'Member'} · ${u['team'] ?? ''}',
-                        style: poppins(color: Colors.white54, fontSize: 11.0),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      u['name'] as String? ?? '',
+                      style: poppins(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15.0,
                       ),
-                      Text(
-                        u['roll_number'] ?? '',
-                        style: poppins(color: Colors.white30, fontSize: 10.0),
-                      ),
-                    ],
+                    ),
+                    Text(
+                      '${u['role'] ?? 'Member'} · $teamLabel',
+                      style: poppins(color: Colors.white54, fontSize: 11.0),
+                    ),
+                    Text(
+                      u['roll_number'] ?? '',
+                      style: poppins(color: Colors.white30, fontSize: 10.0),
+                    ),
+                  ],
+                ),
+              ),
+              // Team pill badge
+              if (teamLabel.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF4DA6FF).withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: const Color(0xFF4DA6FF).withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Text(
+                    teamLabel,
+                    style: poppins(
+                      color: const Color(0xFF4DA6FF),
+                      fontSize: 10.0,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 20),
-
-          // Dashboard Title
-          Text(
-            'Personal Dashboard',
-            style: poppins(
-              color: Colors.white,
-              fontWeight: FontWeight.w800,
-              fontSize: 14.0,
-            ),
-          ),
-          const SizedBox(height: 12),
-
-          // 2x2 Grid of statistics
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            crossAxisSpacing: 12,
-            mainAxisSpacing: 12,
-            childAspectRatio: 1.4,
-            children: [
-              _dashboardCard(
-                'Work Hours',
-                _fmtSeconds(totalSec),
-                'Total duration logged',
-                Icons.timer_rounded,
-                const Color(0xFF4DA6FF),
-                poppins,
-              ),
-              _dashboardCard(
-                'Attendance',
-                '${attPct.toStringAsFixed(1)}%',
-                '$attPresent of $attTotal present',
-                Icons.fact_check_rounded,
-                attPct >= 75
-                    ? const Color(0xFF00C48C)
-                    : const Color(0xFFFF6B6B),
-                poppins,
-              ),
-              _dashboardCard(
-                'Sessions',
-                '$sessions',
-                'Total activity check-ins',
-                Icons.login_rounded,
-                const Color(0xFFFFD93D),
-                poppins,
-              ),
-              _dashboardCard(
-                'Avg Session',
-                _fmtSeconds(avgSec),
-                'Per check-in duration',
-                Icons.av_timer_rounded,
-                const Color(0xFF9B59B6),
-                poppins,
-              ),
             ],
           ),
-          const SizedBox(height: 16),
+        ),
+        const SizedBox(height: 16),
 
-          // Extra Stats Card (Full Width)
-          _fullWidthStatCard(
-            'Activity This Week',
-            _fmtSeconds(weekSec),
-            'Hours logged in the last 7 days',
-            Icons.show_chart_rounded,
-            const Color(0xFF00C48C),
-            poppins,
+        // Dashboard Title
+        Text(
+          'Personal Dashboard',
+          style: poppins(
+            color: Colors.white,
+            fontWeight: FontWeight.w800,
+            fontSize: 14.0,
           ),
-          const SizedBox(height: 16),
-          _buildMemberGraphCard(totalSec, weekSec, avgSec, poppins),
-        ],
-      ),
+        ),
+        const SizedBox(height: 12),
+
+        // 2x2 Grid of statistics
+        Builder(
+          builder: (context) {
+            double textScale = MediaQuery.textScalerOf(context).scale(1.0);
+            if (textScale < 1.0) textScale = 1.0;
+            final double adjustedRatio = (1.4 / textScale).clamp(1.0, 1.4);
+
+            return GridView.count(
+              crossAxisCount: 2,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              crossAxisSpacing: 12,
+              mainAxisSpacing: 12,
+              childAspectRatio: adjustedRatio,
+              children: [
+                _dashboardCard(
+                  'Work Hours',
+                  _fmtSeconds(totalSec),
+                  'Total duration logged',
+                  Icons.timer_rounded,
+                  const Color(0xFF4DA6FF),
+                  poppins,
+                ),
+                _dashboardCard(
+                  'Attendance',
+                  '${attPct.toStringAsFixed(1)}%',
+                  '$attPresent of $attTotal present',
+                  Icons.fact_check_rounded,
+                  attPct >= 75
+                      ? const Color(0xFF00C48C)
+                      : const Color(0xFFFF6B6B),
+                  poppins,
+                ),
+                _dashboardCard(
+                  'Sessions',
+                  '$sessions',
+                  'Total activity check-ins',
+                  Icons.login_rounded,
+                  const Color(0xFFFFD93D),
+                  poppins,
+                ),
+                _dashboardCard(
+                  'Avg Session',
+                  _fmtSeconds(avgSec),
+                  'Per check-in duration',
+                  Icons.av_timer_rounded,
+                  const Color(0xFF9B59B6),
+                  poppins,
+                ),
+              ],
+            );
+          },
+        ),
+        const SizedBox(height: 16),
+
+        // Extra Stats Card (Full Width)
+        _fullWidthStatCard(
+          'Activity This Week',
+          _fmtSeconds(weekSec),
+          'Hours logged in the last 7 days',
+          Icons.show_chart_rounded,
+          const Color(0xFF00C48C),
+          poppins,
+        ),
+        const SizedBox(height: 24),
+
+        // Team divider if more entries follow
+        Divider(color: Colors.white.withValues(alpha: 0.08), thickness: 1),
+        const SizedBox(height: 16),
+      ],
     );
   }
 
@@ -1037,44 +1432,57 @@ class _StatisticsPageState extends State<StatisticsPage>
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(icon, color: color, size: 18),
-              const Spacer(),
-              Container(
-                width: 6,
-                height: 6,
-                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+      child: SingleChildScrollView(
+        physics: const ClampingScrollPhysics(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: color, size: 18),
+                const Spacer(),
+                Container(
+                  width: 6,
+                  height: 6,
+                  decoration: BoxDecoration(
+                    color: color,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              value,
+              style: poppins(
+                color: Colors.white,
+                fontSize: 20.0,
+                fontWeight: FontWeight.w900,
+                shadows: [
+                  Shadow(color: color.withValues(alpha: 0.3), blurRadius: 8),
+                ],
               ),
-            ],
-          ),
-          const Spacer(),
-          Text(
-            value,
-            style: poppins(
-              color: Colors.white,
-              fontSize: 18.0,
-              fontWeight: FontWeight.bold,
             ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            title,
-            style: poppins(
-              color: Colors.white70,
-              fontSize: 11.0,
-              fontWeight: FontWeight.bold,
+            const SizedBox(height: 2),
+            Text(
+              title,
+              style: poppins(
+                color: Colors.white.withValues(alpha: 0.9),
+                fontSize: 12.0,
+                fontWeight: FontWeight.bold,
+              ),
             ),
-          ),
-          Text(
-            subtitle,
-            style: poppins(color: Colors.white30, fontSize: 8.0),
-            overflow: TextOverflow.ellipsis,
-          ),
-        ],
+            Text(
+              subtitle,
+              style: poppins(
+                color: Colors.white.withValues(alpha: 0.5),
+                fontSize: 9.0,
+                fontWeight: FontWeight.w500,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1112,15 +1520,19 @@ class _StatisticsPageState extends State<StatisticsPage>
                 Text(
                   title,
                   style: poppins(
-                    color: Colors.white70,
-                    fontSize: 11.0,
+                    color: Colors.white.withValues(alpha: 0.9),
+                    fontSize: 12.0,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   subtitle,
-                  style: poppins(color: Colors.white30, fontSize: 9.0),
+                  style: poppins(
+                    color: Colors.white.withValues(alpha: 0.5),
+                    fontSize: 10.0,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
               ],
             ),
@@ -1129,8 +1541,11 @@ class _StatisticsPageState extends State<StatisticsPage>
             value,
             style: poppins(
               color: Colors.white,
-              fontSize: 18.0,
-              fontWeight: FontWeight.bold,
+              fontSize: 20.0,
+              fontWeight: FontWeight.w900,
+              shadows: [
+                Shadow(color: color.withValues(alpha: 0.3), blurRadius: 8),
+              ],
             ),
           ),
         ],
@@ -1170,7 +1585,7 @@ class _StatisticsPageState extends State<StatisticsPage>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Team Overview',
+            _isAdmin ? 'Club Overview' : 'Team Overview',
             style: poppins(
               color: Colors.white,
               fontWeight: FontWeight.bold,

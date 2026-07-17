@@ -64,7 +64,18 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
       if (response.statusCode == 200) {
         final Map<String, dynamic> data = jsonDecode(response.body);
         setState(() {
-          _attendanceData = data;
+          if (data.containsKey('overall')) {
+            _attendanceData = data;
+          } else {
+            // Backward-compatibility wrapper
+            _attendanceData = {
+              'success': true,
+              'teams': {
+                team: data
+              },
+              'overall': data
+            };
+          }
         });
       } else {
         setState(() {
@@ -101,7 +112,9 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
   @override
   Widget build(BuildContext context) {
     final poppins = GoogleFonts.poppins;
-    final teamName = widget.userData?.team ?? 'SEDS Member';
+    // Build team display label — show all teams joined with " · "
+    final rawTeam = widget.userData?.team ?? 'SEDS Member';
+    final teamName = rawTeam.split(',').map((t) => t.trim()).join(' · ');
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -148,17 +161,48 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
                     ),
                   )
                 else ...[
-                  // ── Chart & Percentage Card ──
-                  _buildChartCard(poppins),
-                  const SizedBox(height: 20),
+                  // ── Chart & Percentage Cards ──
+                  if (_attendanceData['teams'] != null &&
+                      (_attendanceData['teams'] as Map).length > 1) ...[
+                    _buildChartCard(
+                      poppins,
+                      'Overall Attendance Rate',
+                      _attendanceData['overall'] ?? {},
+                    ),
+                    const SizedBox(height: 16),
+                    ...(_attendanceData['teams'] as Map<String, dynamic>)
+                        .entries
+                        .map((entry) {
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 16.0),
+                        child: _buildChartCard(
+                          poppins,
+                          '${entry.key} Team Attendance',
+                          entry.value,
+                        ),
+                      );
+                    }),
+                  ] else ...[
+                    _buildChartCard(
+                      poppins,
+                      'Attendance Rate',
+                      _attendanceData['overall'] ?? _attendanceData,
+                    ),
+                    const SizedBox(height: 20),
+                  ],
 
                   // ── Stats Row ──
                   _buildStatsRow(poppins),
+                  if (_attendanceData['teams'] != null &&
+                      (_attendanceData['teams'] as Map).length > 1) ...[
+                    const SizedBox(height: 16),
+                    _buildTeamStatsBreakdownCard(poppins),
+                  ],
                   const SizedBox(height: 24),
 
                   // ── Upcoming Meetings Section ──
                   Text(
-                    'Upcoming Meetings',
+                    'Scheduled Meetings',
                     style: poppins(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white70),
                   ),
                   const SizedBox(height: 12),
@@ -182,6 +226,8 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
   }
 
   Widget _buildHeaderCard(TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins, String teamName) {
+    // Split raw team into individual team labels for chips
+    final teams = teamName.split('·').map((t) => t.trim()).where((t) => t.isNotEmpty).toList();
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -192,26 +238,57 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'My Attendance',
-                style: poppins(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'My Attendance',
+                  style: poppins(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
                 ),
-              ),
-              Text(
-                '$teamName Team Member',
-                style: poppins(
-                  fontSize: 13,
-                  color: const Color(0xFF4DA6FF),
-                  fontWeight: FontWeight.w500,
+                const SizedBox(height: 6),
+                // Team chips — one per team
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withValues(alpha: 0.06),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        'Member',
+                        style: poppins(fontSize: 11, color: Colors.white54),
+                      ),
+                    ),
+                    ...teams.map((t) => Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF4DA6FF).withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: const Color(0xFF4DA6FF).withValues(alpha: 0.3),
+                        ),
+                      ),
+                      child: Text(
+                        t,
+                        style: poppins(
+                          fontSize: 11,
+                          color: const Color(0xFF4DA6FF),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    )),
+                  ],
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
           Row(
             children: [
@@ -225,12 +302,22 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
     );
   }
 
-  Widget _buildChartCard(TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins) {
-    final double percentage = (_attendanceData['percentage'] as num?)?.toDouble() ?? 100.0;
-    final int total = (_attendanceData['total_meetings'] as num?)?.toInt() ?? 0;
+
+  Widget _buildChartCard(
+    TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins,
+    String title,
+    Map<String, dynamic> data,
+  ) {
+    final double percentage = (data['percentage'] as num?)?.toDouble() ?? 100.0;
+    final int total = (data['total_meetings'] as num?)?.toInt() ?? 0;
+    final int present = (data['present_count'] as num?)?.toInt() ?? 0;
+    final int absent = (data['absent_count'] as num?)?.toInt() ?? 0;
+    final int onDuty = (data['on_duty_count'] as num?)?.toInt() ?? 0;
 
     // Gradient bar widths
     final double fillFactor = total > 0 ? (percentage / 100.0) : 1.0;
+    final double presentRatio = total > 0 ? present / total : 0.0;
+    final double absentRatio = total > 0 ? absent / total : 0.0;
 
     return Container(
       width: double.infinity,
@@ -247,8 +334,8 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                'Attendance Rate',
-                style: poppins(fontSize: 14, color: Colors.white60, fontWeight: FontWeight.w500),
+                title,
+                style: poppins(fontSize: 14, color: Colors.white70, fontWeight: FontWeight.w600),
               ),
               Text(
                 '$percentage%',
@@ -269,7 +356,6 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
               final fillWidth = trackWidth * fillFactor;
               return Stack(
                 children: [
-                  // Track
                   Container(
                     height: 14,
                     width: double.infinity,
@@ -278,7 +364,6 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
                       borderRadius: BorderRadius.circular(7),
                     ),
                   ),
-                  // Fill Bar
                   Container(
                     height: 14,
                     width: fillWidth > 0 ? fillWidth : 0.1,
@@ -304,44 +389,211 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                '0%',
-                style: poppins(fontSize: 11, color: Colors.white30),
-              ),
+              Text('0%', style: poppins(fontSize: 11, color: Colors.white30)),
               if (percentage < 75 && total > 0)
-                Text(
-                  'Needs Improvement (Aim for 75%+)',
-                  style: poppins(fontSize: 10, color: Colors.orangeAccent, fontWeight: FontWeight.w500),
-                )
+                Text('Needs Improvement (Aim for 75%+)',
+                    style: poppins(fontSize: 10, color: Colors.orangeAccent, fontWeight: FontWeight.w500))
               else
-                Text(
-                  'Good Standing',
-                  style: poppins(fontSize: 10, color: const Color(0xFF00E676), fontWeight: FontWeight.w500),
-                ),
-              Text(
-                '100%',
-                style: poppins(fontSize: 11, color: Colors.white30),
-              ),
+                Text('Good Standing',
+                    style: poppins(fontSize: 10, color: const Color(0xFF00E676), fontWeight: FontWeight.w500)),
+              Text('100%', style: poppins(fontSize: 11, color: Colors.white30)),
             ],
           ),
+
+          // ── Per-team present / absent breakdown bars ──
+          const SizedBox(height: 16),
+          Divider(color: Colors.white.withValues(alpha: 0.07)),
+          const SizedBox(height: 10),
+
+          // Present bar
+          _buildMiniBar(
+            poppins,
+            label: 'Attended',
+            count: present,
+            total: total,
+            ratio: presentRatio,
+            color: const Color(0xFF00E676),
+          ),
+          const SizedBox(height: 8),
+
+          // Absent bar
+          _buildMiniBar(
+            poppins,
+            label: 'Absent',
+            count: absent,
+            total: total,
+            ratio: absentRatio,
+            color: Colors.redAccent,
+          ),
+
+          if (onDuty > 0) ...[
+            const SizedBox(height: 8),
+            // On Duty bar
+            _buildMiniBar(
+              poppins,
+              label: 'On Duty',
+              count: onDuty,
+              total: total + onDuty,
+              ratio: (total + onDuty) > 0 ? onDuty / (total + onDuty) : 0.0,
+              color: const Color(0xFF4DA6FF),
+            ),
+          ],
         ],
       ),
     );
   }
 
+  Widget _buildMiniBar(
+    TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins, {
+    required String label,
+    required int count,
+    required int total,
+    required double ratio,
+    required Color color,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              label,
+              style: poppins(fontSize: 11, color: Colors.white70, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              '$count / $total',
+              style: poppins(fontSize: 11, color: color, fontWeight: FontWeight.w900),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: ratio.clamp(0.0, 1.0),
+            minHeight: 8,
+            backgroundColor: Colors.white.withValues(alpha: 0.07),
+            valueColor: AlwaysStoppedAnimation<Color>(color),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildStatsRow(TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins) {
-    final int total = (_attendanceData['total_meetings'] as num?)?.toInt() ?? 0;
-    final int present = (_attendanceData['present_count'] as num?)?.toInt() ?? 0;
-    final int absent = (_attendanceData['absent_count'] as num?)?.toInt() ?? 0;
+    final Map<String, dynamic> overall = _attendanceData['overall'] ?? _attendanceData;
+    final int total = (overall['total_meetings'] as num?)?.toInt() ?? 0;
+    final int present = (overall['present_count'] as num?)?.toInt() ?? 0;
+    final int absent = (overall['absent_count'] as num?)?.toInt() ?? 0;
+    final int onDuty = (overall['on_duty_count'] as num?)?.toInt() ?? 0;
 
     return Row(
       children: [
-        Expanded(child: _buildStatItem(poppins, 'Total', '$total', Colors.white)),
-        const SizedBox(width: 10),
+        Expanded(child: _buildStatItem(poppins, 'Total', '${total + onDuty}', Colors.white)),
+        const SizedBox(width: 8),
         Expanded(child: _buildStatItem(poppins, 'Attended', '$present', const Color(0xFF00E676))),
-        const SizedBox(width: 10),
-        Expanded(child: _buildStatItem(poppins, 'Missed', '$absent', Colors.redAccent)),
+        const SizedBox(width: 8),
+        Expanded(child: _buildStatItem(poppins, 'Absent', '$absent', Colors.redAccent)),
+        if (onDuty > 0) ...[
+          const SizedBox(width: 8),
+          Expanded(child: _buildStatItem(poppins, 'On Duty', '$onDuty', const Color(0xFF4DA6FF))),
+        ],
       ],
+    );
+  }
+
+  Widget _buildTeamStatsBreakdownCard(TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins) {
+    final teamsData = _attendanceData['teams'] as Map<String, dynamic>;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Team Attendance Breakdown',
+            style: poppins(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white70),
+          ),
+          const SizedBox(height: 14),
+          ...teamsData.entries.map((entry) {
+            final tName = entry.key;
+            final tData = entry.value;
+            final int present = (tData['present_count'] as num?)?.toInt() ?? 0;
+            final int absent = (tData['absent_count'] as num?)?.toInt() ?? 0;
+            final int onDuty = (tData['on_duty_count'] as num?)?.toInt() ?? 0;
+            final double pct = (tData['percentage'] as num?)?.toDouble() ?? 0.0;
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.02),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.04)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        '$tName Team',
+                        style: poppins(fontSize: 13, fontWeight: FontWeight.bold, color: const Color(0xFF4DA6FF)),
+                      ),
+                      Text(
+                        '$pct%',
+                        style: poppins(
+                          fontSize: 13, 
+                          fontWeight: FontWeight.bold, 
+                          color: pct >= 75 ? const Color(0xFF00E676) : Colors.orangeAccent
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      _smallStatBadge(poppins, 'Attended: $present', const Color(0xFF00E676)),
+                      const SizedBox(width: 6),
+                      _smallStatBadge(poppins, 'Absent: $absent', Colors.redAccent),
+                      if (onDuty > 0) ...[
+                        const SizedBox(width: 6),
+                        _smallStatBadge(poppins, 'On Duty: $onDuty', const Color(0xFF4DA6FF)),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  Widget _smallStatBadge(
+    TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins,
+    String text,
+    Color color,
+  ) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: color.withValues(alpha: 0.25)),
+      ),
+      child: Text(
+        text,
+        style: poppins(fontSize: 10, fontWeight: FontWeight.bold, color: color),
+      ),
     );
   }
 
@@ -374,7 +626,7 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
     );
   }
 
-  DateTime? _parseMeetingEndDateTime(String dateStr, String endTimeStr) {
+  DateTime? _parseMeetingDateTime(String dateStr, String timeStr) {
     try {
       final dateParts = dateStr.trim().split('/');
       if (dateParts.length != 3) return null;
@@ -382,7 +634,7 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
       final day = int.parse(dateParts[1]);
       final year = int.parse(dateParts[2]);
 
-      final timeParts = endTimeStr.trim().split(' ');
+      final timeParts = timeStr.trim().split(' ');
       if (timeParts.length != 2) return null;
       
       final isPM = timeParts[1].toUpperCase() == 'PM';
@@ -400,7 +652,7 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
 
       return DateTime(year, month, day, hour, minute);
     } catch (e) {
-      debugPrint('Error parsing end date time: $e');
+      debugPrint('Error parsing date time: $e');
     }
     return null;
   }
@@ -411,8 +663,11 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
     final List<dynamic> upcomingOnly = _upcomingMeetings.where((meeting) {
       final dateStr = meeting['meeting_date'] ?? '';
       final endTimeStr = meeting['end_time'] ?? '';
+      final meetingStatus = (meeting['status'] as String? ?? '').toUpperCase();
       
-      final endDateTime = _parseMeetingEndDateTime(dateStr, endTimeStr);
+      if (meetingStatus == 'SUBMITTED' || meetingStatus == 'COMPLETED') return false;
+      
+      final endDateTime = _parseMeetingDateTime(dateStr, endTimeStr);
       if (endDateTime == null) return true; // Keep if unparseable to be safe
       
       return now.isBefore(endDateTime);
@@ -429,7 +684,7 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
         ),
         child: Center(
           child: Text(
-            'No upcoming meetings scheduled.',
+            'No scheduled meetings.',
             style: poppins(fontSize: 13, color: Colors.white38, fontWeight: FontWeight.bold),
           ),
         ),
@@ -446,10 +701,26 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
         final start = meeting['start_time'] ?? '';
         final end = meeting['end_time'] ?? '';
         final venue = meeting['venue'] ?? '';
-        final mode = meeting['meeting_mode'] ?? 'OFFLINE';
         final agenda = meeting['agenda'] ?? '';
         final status = meeting['status'] ?? 'SCHEDULED';
         final bool isCancelled = status == 'CANCELLED';
+
+        // Compute meeting start and end datetimes to show ONGOING / UPCOMING status
+        final startDateTime = _parseMeetingDateTime(date, start);
+        final endDateTime = _parseMeetingDateTime(date, end);
+
+        String badgeText = 'UPCOMING';
+        Color badgeColor = const Color(0xFF4DA6FF);
+
+        if (isCancelled) {
+          badgeText = 'CANCELLED';
+          badgeColor = Colors.redAccent;
+        } else if (startDateTime != null && endDateTime != null) {
+          if (now.isAfter(startDateTime) && now.isBefore(endDateTime)) {
+            badgeText = 'ONGOING';
+            badgeColor = const Color(0xFF00E676);
+          }
+        }
 
         return Container(
           margin: const EdgeInsets.only(bottom: 12),
@@ -482,22 +753,18 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                      color: isCancelled
-                          ? Colors.redAccent.withValues(alpha: 0.15)
-                          : const Color(0xFF4DA6FF).withValues(alpha: 0.15),
+                      color: badgeColor.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(6),
                       border: Border.all(
-                        color: isCancelled
-                            ? Colors.redAccent.withValues(alpha: 0.25)
-                            : const Color(0xFF4DA6FF).withValues(alpha: 0.25),
+                        color: badgeColor.withValues(alpha: 0.25),
                       ),
                     ),
                     child: Text(
-                      isCancelled ? 'CANCELLED' : mode.toUpperCase(),
+                      badgeText,
                       style: poppins(
                         fontSize: 9,
                         fontWeight: FontWeight.bold,
-                        color: isCancelled ? Colors.redAccent : const Color(0xFF4DA6FF),
+                        color: badgeColor,
                       ),
                     ),
                   ),
@@ -612,6 +879,25 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
         final status = (rec['status'] as String? ?? 'Absent').toLowerCase();
         final reason = rec['reason'] ?? '';
         final bool isPresent = status == 'present';
+        final bool isOnDuty = status == 'on_duty';
+        final bool isOnDutyPending = status == 'on_duty_pending';
+        final teamLabel = rec['team'] != null ? ' · ${rec['team']}' : '';
+
+        // Color theme per status
+        final Color statusColor = isPresent
+            ? const Color(0xFF00E676)
+            : isOnDuty
+            ? const Color(0xFF4DA6FF)
+            : isOnDutyPending
+            ? const Color(0xFFFFD93D)
+            : Colors.redAccent;
+        final String statusLabel = isPresent
+            ? 'PRESENT'
+            : isOnDuty
+            ? 'ON DUTY'
+            : isOnDutyPending
+            ? 'ON DUTY⏳'
+            : 'ABSENT';
 
         return Container(
           margin: const EdgeInsets.only(bottom: 12),
@@ -619,12 +905,14 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
           decoration: BoxDecoration(
             color: isPresent
                 ? const Color(0xFF00E676).withValues(alpha: 0.03)
+                : isOnDuty
+                ? const Color(0xFF4DA6FF).withValues(alpha: 0.03)
+                : isOnDutyPending
+                ? const Color(0xFFFFD93D).withValues(alpha: 0.03)
                 : Colors.white.withValues(alpha: 0.04),
             borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: isPresent
-                  ? const Color(0xFF00E676).withValues(alpha: 0.15)
-                  : Colors.white.withValues(alpha: 0.08),
+              color: statusColor.withValues(alpha: 0.18),
             ),
           ),
           child: Column(
@@ -635,7 +923,7 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
                 children: [
                   Expanded(
                     child: Text(
-                      meetingStr,
+                      '$meetingStr$teamLabel',
                       style: poppins(fontSize: 13, fontWeight: FontWeight.w600, color: Colors.white.withValues(alpha: 0.9)),
                     ),
                   ),
@@ -643,28 +931,24 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                     decoration: BoxDecoration(
-                      color: isPresent
-                          ? const Color(0xFF00E676).withValues(alpha: 0.15)
-                          : Colors.redAccent.withValues(alpha: 0.15),
+                      color: statusColor.withValues(alpha: 0.15),
                       borderRadius: BorderRadius.circular(6),
                       border: Border.all(
-                        color: isPresent
-                            ? const Color(0xFF00E676).withValues(alpha: 0.25)
-                            : Colors.redAccent.withValues(alpha: 0.25),
+                        color: statusColor.withValues(alpha: 0.25),
                       ),
                     ),
                     child: Text(
-                      isPresent ? 'PRESENT' : 'ABSENT',
+                      statusLabel,
                       style: poppins(
                         fontSize: 9,
                         fontWeight: FontWeight.bold,
-                        color: isPresent ? const Color(0xFF00E676) : Colors.redAccent,
+                        color: statusColor,
                       ),
                     ),
                   ),
                 ],
               ),
-              if (!isPresent && reason.isNotEmpty) ...[
+              if (!isPresent && !isOnDuty && !isOnDutyPending && reason.isNotEmpty) ...[
                 const SizedBox(height: 12),
                 Container(
                   width: double.infinity,

@@ -7,7 +7,9 @@ import 'app_toast.dart';
 import 'main.dart';
 
 class AnalyseUsersPage extends StatefulWidget {
-  const AnalyseUsersPage({super.key});
+  final String? initialUserEmail;
+  final dynamic userData;
+  const AnalyseUsersPage({super.key, this.initialUserEmail, this.userData});
 
   @override
   State<AnalyseUsersPage> createState() => _AnalyseUsersPageState();
@@ -29,6 +31,13 @@ class _AnalyseUsersPageState extends State<AnalyseUsersPage> with SingleTickerPr
     super.initState();
     _tabController = TabController(length: 6, vsync: this);
     _searchController.addListener(_onSearchChanged);
+    
+    // Auto-load details if initial email is provided
+    if (widget.initialUserEmail != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _loadUserAnalysis(widget.initialUserEmail!);
+      });
+    }
   }
 
   @override
@@ -57,7 +66,9 @@ class _AnalyseUsersPageState extends State<AnalyseUsersPage> with SingleTickerPr
       _isSearching = true;
     });
     try {
-      final response = await http.get(Uri.parse('$apiBaseUrl/api/users/search?q=${Uri.encodeComponent(query)}'));
+      final role = widget.userData?.role ?? '';
+      final team = widget.userData?.team ?? '';
+      final response = await http.get(Uri.parse('$apiBaseUrl/api/users/search?q=${Uri.encodeComponent(query)}&role=${Uri.encodeComponent(role)}&team=${Uri.encodeComponent(team)}'));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (mounted) {
@@ -86,7 +97,10 @@ class _AnalyseUsersPageState extends State<AnalyseUsersPage> with SingleTickerPr
     });
 
     try {
-      final response = await http.get(Uri.parse('$apiBaseUrl/api/admin/analyse-user?email=${Uri.encodeComponent(email)}'));
+      final reqEmail = widget.userData?.email ?? '';
+      final reqRole = widget.userData?.role ?? '';
+      final reqTeam = widget.userData?.team ?? '';
+      final response = await http.get(Uri.parse('$apiBaseUrl/api/admin/analyse-user?email=${Uri.encodeComponent(email)}&requester_email=${Uri.encodeComponent(reqEmail)}&requester_role=${Uri.encodeComponent(reqRole)}&requester_team=${Uri.encodeComponent(reqTeam)}'));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (mounted) {

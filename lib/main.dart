@@ -253,6 +253,26 @@ class SEDSApp extends StatelessWidget {
   final UserData? initialUserData;
   const SEDSApp({super.key, this.initialUserData});
 
+  TextTheme _makeBoldTextTheme(TextTheme base) {
+    return base.copyWith(
+      displayLarge: base.displayLarge?.copyWith(fontWeight: FontWeight.bold),
+      displayMedium: base.displayMedium?.copyWith(fontWeight: FontWeight.bold),
+      displaySmall: base.displaySmall?.copyWith(fontWeight: FontWeight.bold),
+      headlineLarge: base.headlineLarge?.copyWith(fontWeight: FontWeight.bold),
+      headlineMedium: base.headlineMedium?.copyWith(fontWeight: FontWeight.bold),
+      headlineSmall: base.headlineSmall?.copyWith(fontWeight: FontWeight.bold),
+      titleLarge: base.titleLarge?.copyWith(fontWeight: FontWeight.bold),
+      titleMedium: base.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+      titleSmall: base.titleSmall?.copyWith(fontWeight: FontWeight.bold),
+      bodyLarge: base.bodyLarge?.copyWith(fontWeight: FontWeight.bold),
+      bodyMedium: base.bodyMedium?.copyWith(fontWeight: FontWeight.bold),
+      bodySmall: base.bodySmall?.copyWith(fontWeight: FontWeight.bold),
+      labelLarge: base.labelLarge?.copyWith(fontWeight: FontWeight.bold),
+      labelMedium: base.labelMedium?.copyWith(fontWeight: FontWeight.bold),
+      labelSmall: base.labelSmall?.copyWith(fontWeight: FontWeight.bold),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return ValueListenableBuilder<AccessibilitySettings>(
@@ -269,9 +289,14 @@ class SEDSApp extends StatelessWidget {
             ),
             useMaterial3: true,
             fontFamily: GoogleFonts.poppins().fontFamily,
-            textTheme: GoogleFonts.poppinsTextTheme(
-              ThemeData.dark().textTheme,
-            ).apply(bodyColor: Colors.white, displayColor: Colors.white),
+            textTheme: _makeBoldTextTheme(
+              GoogleFonts.poppinsTextTheme(
+                ThemeData.dark().textTheme,
+              ).apply(
+                bodyColor: Colors.white,
+                displayColor: Colors.white,
+              ),
+            ),
           ),
           builder: (context, child) {
             final mediaQuery = MediaQuery.of(context);
@@ -824,10 +849,12 @@ class MainPage extends StatefulWidget {
 class _MainPageState extends State<MainPage> {
   int _currentIndex = 0;
   late List<Widget> _pages;
+  late PageController _pageController;
 
   @override
   void initState() {
     super.initState();
+    _pageController = PageController(initialPage: _currentIndex);
     final isLead = widget.userData?.role == 'Lead';
     final isAdmin =
         widget.userData?.role == 'Admin' ||
@@ -871,6 +898,12 @@ class _MainPageState extends State<MainPage> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initE2EEKeys();
     });
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
   }
 
   Future<void> _initE2EEKeys() async {
@@ -983,7 +1016,47 @@ class _MainPageState extends State<MainPage> {
 
   @override
   Widget build(BuildContext context) {
-    final bool isDesktop = Platform.isWindows; // true for web + Windows desktop
+    final double screenWidth = MediaQuery.of(context).size.width;
+    final bool isDesktop = screenWidth > 768; // true for web desktop + wide screens
+
+    final uData = currentUserData ?? widget.userData;
+    final isLead = uData?.role == 'Lead';
+    final isAdmin =
+        uData?.role == 'Admin' ||
+        uData?.role == 'SuperAdmin';
+
+    if (isAdmin) {
+      _pages = <Widget>[
+        HomeTab(
+          userData: uData,
+          onUserDataUpdated: () {
+            if (mounted) setState(() {});
+          },
+        ),
+        ChatTab(userData: uData),
+        AttendanceAdminTab(userData: uData),
+        DailyLogsTab(userData: uData),
+        StatisticsPage(userData: uData, isActive: _currentIndex == 4),
+        ProfileTab(userData: uData),
+      ];
+    } else {
+      _pages = <Widget>[
+        HomeTab(
+          userData: uData,
+          onUserDataUpdated: () {
+            if (mounted) setState(() {});
+          },
+        ),
+        ChatTab(userData: uData),
+        isLead
+            ? AttendanceTab(userData: uData)
+            : AttendanceMembersTab(userData: uData),
+        DailyLogsTab(userData: uData),
+        StatisticsPage(userData: uData, isActive: _currentIndex == 4),
+        ProfileTab(userData: uData),
+      ];
+    }
+
     return Scaffold(
       backgroundColor: isDesktop ? const Color(0xFFF1F5F9) : const Color(0xFF0D1E3A),
       resizeToAvoidBottomInset: false,
@@ -1056,13 +1129,51 @@ class _MainPageState extends State<MainPage> {
                                   child: Container(color: Colors.black.withValues(alpha: 0.45)),
                                 ),
                                 Positioned.fill(
-                                  child: IndexedStack(index: _currentIndex, children: _pages),
+                                  child: PageView(
+                                    controller: _pageController,
+                                    onPageChanged: (index) {
+                                      setState(() {
+                                        _currentIndex = index;
+                                      });
+                                      final pages = [
+                                        'Home',
+                                        'Chat',
+                                        'Attendance',
+                                        'Daily Logs',
+                                        'Statistics',
+                                        'Profile',
+                                      ];
+                                      if (index < pages.length) {
+                                        trackPageVisit(pages[index]);
+                                      }
+                                    },
+                                    children: _pages,
+                                  ),
                                 ),
                               ],
                             ),
                           ),
                         )
-                      : IndexedStack(index: _currentIndex, children: _pages),
+                      : PageView(
+                          controller: _pageController,
+                          onPageChanged: (index) {
+                            setState(() {
+                              _currentIndex = index;
+                            });
+                            final pages = [
+                              'Home',
+                              'Chat',
+                              'Attendance',
+                              'Daily Logs',
+                              'Statistics',
+                              'Profile',
+                            ];
+                            if (index < pages.length) {
+                              trackPageVisit(pages[index]);
+                            }
+                          },
+                          children: _pages,
+                        ),
                 ),
               ),
             ),
@@ -1076,6 +1187,11 @@ class _MainPageState extends State<MainPage> {
               currentIndex: _currentIndex,
               userData: widget.userData,
               onTap: (index) {
+                _pageController.animateToPage(
+                  index,
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeInOut,
+                );
                 setState(() {
                   _currentIndex = index;
                 });
@@ -1183,34 +1299,41 @@ class SEDSFloatingNavigationBar extends StatelessWidget {
 
     final String? imageUrl = userData?.imageUrl;
 
+    final double screenWidth = MediaQuery.of(context).size.width;
+    final bool isWide = screenWidth > 768;
+    final bool isNarrow = screenWidth < 420;
+
     return Align(
       alignment: Alignment.bottomCenter,
       child: Padding(
-        padding: const EdgeInsets.only(bottom: 20),
+        padding: const EdgeInsets.only(bottom: 42),
         child: Container(
           padding: EdgeInsets.symmetric(
-            vertical: Platform.isWindows ? 10 : 6,
-            horizontal: Platform.isWindows ? 14 : 8,
+            vertical: isWide ? 12 : 8,
+            horizontal: isWide ? 16 : 6,
           ),
           decoration: BoxDecoration(
             color: Colors.white,
-            borderRadius: BorderRadius.circular(Platform.isWindows ? 40 : 32),
+            borderRadius: BorderRadius.circular(isWide ? 44 : 36),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withValues(alpha: 0.1),
-                blurRadius: 20,
-                spreadRadius: 2,
-                offset: const Offset(0, 4),
+                color: Colors.black.withValues(alpha: 0.15),
+                blurRadius: 24,
+                spreadRadius: 3,
+                offset: const Offset(0, 6),
               ),
             ],
           ),
           child: SafeArea(
             top: false,
             bottom: false,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: List.generate(items.length, (index) {
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(items.length, (index) {
                 final isSelected = index == currentIndex;
                 final item = items[index];
 
@@ -1221,15 +1344,17 @@ class SEDSFloatingNavigationBar extends StatelessWidget {
                     duration: const Duration(milliseconds: 300),
                     curve: Curves.easeInOut,
                     padding: EdgeInsets.symmetric(
-                      horizontal: Platform.isWindows ? 22 : 10,
-                      vertical: Platform.isWindows ? 14 : 8,
+                      horizontal: isSelected
+                          ? (isNarrow ? 10 : (isWide ? 24 : 16))
+                          : (isNarrow ? 6 : (isWide ? 16 : 10)),
+                      vertical: isWide ? 14 : 10,
                     ),
                     margin: const EdgeInsets.symmetric(horizontal: 2),
                     decoration: BoxDecoration(
                       color: isSelected
                           ? const Color(0xFF0084FF).withValues(alpha: 0.12)
                           : Colors.transparent,
-                      borderRadius: BorderRadius.circular(Platform.isWindows ? 30 : 24),
+                      borderRadius: BorderRadius.circular(isWide ? 30 : 24),
                     ),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -1237,8 +1362,8 @@ class SEDSFloatingNavigationBar extends StatelessWidget {
                         // The Icon (or Profile Picture)
                         item.label == 'Profile'
                             ? Container(
-                                width: Platform.isWindows ? 32 : 26,
-                                height: Platform.isWindows ? 32 : 26,
+                                width: isWide ? 34 : 29,
+                                height: isWide ? 34 : 29,
                                 decoration: BoxDecoration(
                                   color: const Color(0xFF0084FF),
                                   shape: BoxShape.circle,
@@ -1254,14 +1379,14 @@ class SEDSFloatingNavigationBar extends StatelessWidget {
                                       ? Image.network(
                                           imageUrl,
                                           fit: BoxFit.cover,
-                                          width: Platform.isWindows ? 32 : 26,
-                                          height: Platform.isWindows ? 32 : 26,
+                                          width: isWide ? 34 : 29,
+                                          height: isWide ? 34 : 29,
                                           errorBuilder: (ctx, err, st) =>
                                               Center(
                                                 child: Icon(
                                                   Icons.person_rounded,
                                                   color: Colors.white,
-                                                  size: Platform.isWindows ? 20 : 16,
+                                                  size: isWide ? 22 : 18,
                                                 ),
                                               ),
                                         )
@@ -1269,7 +1394,7 @@ class SEDSFloatingNavigationBar extends StatelessWidget {
                                           child: Icon(
                                             Icons.person_rounded,
                                             color: Colors.white,
-                                            size: Platform.isWindows ? 20 : 16,
+                                            size: isWide ? 22 : 18,
                                           ),
                                         ),
                                 ),
@@ -1279,7 +1404,7 @@ class SEDSFloatingNavigationBar extends StatelessWidget {
                                 color: isSelected
                                     ? const Color(0xFF0084FF)
                                     : const Color(0xFF5F6368),
-                                size: Platform.isWindows ? 32 : 26,
+                                size: isWide ? 34 : 29,
                               ),
 
                         // Animated text next to it
@@ -1289,12 +1414,12 @@ class SEDSFloatingNavigationBar extends StatelessWidget {
                           child: isSelected
                               ? Row(
                                   children: [
-                                    const SizedBox(width: 6),
+                                    const SizedBox(width: 8),
                                     Text(
                                       item.label,
                                       style: GoogleFonts.poppins(
                                         color: const Color(0xFF0084FF),
-                                        fontSize: Platform.isWindows ? 15 : 10.5,
+                                        fontSize: isWide ? 16 : 13.0,
                                         fontWeight: FontWeight.bold,
                                       ),
                                     ),
@@ -1311,14 +1436,16 @@ class SEDSFloatingNavigationBar extends StatelessWidget {
           ),
         ),
       ),
-    );
+    ),
+  );
   }
 }
 
 // ─────────────── Home Tab ───────────────
 class HomeTab extends StatefulWidget {
   final UserData? userData;
-  const HomeTab({super.key, this.userData});
+  final VoidCallback? onUserDataUpdated;
+  const HomeTab({super.key, this.userData, this.onUserDataUpdated});
 
   @override
   State<HomeTab> createState() => _HomeTabState();
@@ -1370,11 +1497,13 @@ class _HomeTabState extends State<HomeTab> {
           .timeout(const Duration(seconds: 5));
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
-        if (data['success'] == true) {
+        if (data['success'] == true && data['details'] != null) {
+          final det = data['details'];
           if (mounted) {
             setState(() {
-              _userDetails = data['details'];
+              _userDetails = det;
             });
+            _updateStoredUserData(det);
           }
         }
       }
@@ -1382,6 +1511,34 @@ class _HomeTabState extends State<HomeTab> {
       debugPrint('Error fetching user details: $e');
     } finally {
       if (mounted) setState(() => _loadingDetails = false);
+    }
+  }
+
+  Future<void> _updateStoredUserData(Map<String, dynamic> det) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final String? userDataStr = prefs.getString('user_data');
+      if (userDataStr != null) {
+        final Map<String, dynamic> userMap = jsonDecode(userDataStr);
+        userMap['team'] = det['team'];
+        userMap['teams'] = det['teams'];
+        if (det['role'] != null) {
+          userMap['role'] = det['role'];
+        }
+        await prefs.setString('user_data', jsonEncode(userMap));
+        
+        final updated = UserData.fromJson(userMap);
+        if (mounted) {
+          setState(() {
+            currentUserData = updated;
+          });
+        }
+        if (widget.onUserDataUpdated != null) {
+          widget.onUserDataUpdated!();
+        }
+      }
+    } catch (e) {
+      debugPrint('Error updating stored user data: $e');
     }
   }
 
@@ -1539,23 +1696,30 @@ class _HomeTabState extends State<HomeTab> {
                     ),
                   ),
                   if (team != null) ...[
-                    const SizedBox(width: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.08),
-                        borderRadius: BorderRadius.circular(20),
-                      ),
-                      child: Text(
-                        team,
-                        style: poppins(
-                          fontSize: 11,
-                          color: const Color(0xFFC9D1E6),
+                    ...team.split(',').map((t) => t.trim()).where((t) => t.isNotEmpty).map((t) =>
+                      Padding(
+                        padding: const EdgeInsets.only(left: 8),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.15),
+                            ),
+                          ),
+                          child: Text(
+                            t,
+                            style: poppins(
+                              fontSize: 11,
+                              color: const Color(0xFFC9D1E6),
+                            ),
+                          ),
                         ),
-                      ),
+                      )
                     ),
                   ],
                 ],
@@ -2346,7 +2510,43 @@ class _ProfileTabState extends State<ProfileTab> {
                     ),
                     if (team != null) ...[
                       const SizedBox(height: 14),
-                      _profileRow(poppins, Icons.group_outlined, 'Team', team),
+                      // Show multi-team as chips
+                      Builder(builder: (context) {
+                        final poppins = GoogleFonts.poppins;
+                        final teams = team.split(',').map((t) => t.trim()).where((t) => t.isNotEmpty).toList();
+                        if (teams.length <= 1) {
+                          return _profileRow(poppins, Icons.group_outlined, 'Team', team);
+                        }
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(Icons.group_outlined, size: 18, color: Colors.white54),
+                                const SizedBox(width: 10),
+                                Text('Team', style: poppins(fontSize: 12, color: Colors.white54)),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 6,
+                              children: teams.map((t) => Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF4DA6FF).withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(20),
+                                  border: Border.all(color: const Color(0xFF4DA6FF).withValues(alpha: 0.3)),
+                                ),
+                                child: Text(
+                                  t,
+                                  style: poppins(fontSize: 13, color: Colors.white, fontWeight: FontWeight.w600),
+                                ),
+                              )).toList(),
+                            ),
+                          ],
+                        );
+                      }),
                     ],
                     if (leadershipRole != null) ...[
                       const SizedBox(height: 14),
@@ -2627,8 +2827,8 @@ class _ProfileTabState extends State<ProfileTab> {
                   ),
                 ),
               ],
-              // ── Analyse Users Button (For Admin only) ──
-              if (role == 'Admin' || role == 'SuperAdmin') ...[
+              // ── Analyse Users Button (For Admin and Lead) ──
+              if (role == 'Admin' || role == 'SuperAdmin' || role == 'Lead') ...[
                 const SizedBox(height: 16),
                 Container(
                   width: double.infinity,
@@ -2648,8 +2848,8 @@ class _ProfileTabState extends State<ProfileTab> {
                         Navigator.push(
                           context,
                           MaterialPageRoute(
-                            builder: (context) => const DesktopPageWrapper(
-                              child: AnalyseUsersPage(),
+                            builder: (context) => DesktopPageWrapper(
+                              child: AnalyseUsersPage(userData: widget.userData),
                             ),
                           ),
                         );

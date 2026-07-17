@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'main.dart'; // To access apiBaseUrl and userData classes
+import 'attendance.dart';
 
 class AttendanceAdminTab extends StatefulWidget {
   final UserData? userData;
@@ -18,6 +19,7 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
   String? _errorMessage;
   List<dynamic> _allRecords = [];
   List<dynamic> _filteredRecords = [];
+  bool _showMarkAttendance = false;
 
   // Search & Filter state
   final TextEditingController _searchController = TextEditingController();
@@ -131,6 +133,78 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
     }
   }
 
+  Widget _buildConsoleToggle(TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins) {
+    return Row(
+      children: [
+        Expanded(
+          child: GestureDetector(
+            onTap: () {
+              setState(() {
+                _showMarkAttendance = false;
+              });
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              decoration: BoxDecoration(
+                color: !_showMarkAttendance
+                    ? const Color(0xFF4DA6FF).withValues(alpha: 0.15)
+                    : Colors.white.withValues(alpha: 0.03),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: !_showMarkAttendance
+                      ? const Color(0xFF4DA6FF).withValues(alpha: 0.3)
+                      : Colors.white10,
+                ),
+              ),
+              child: Text(
+                'Directory Console',
+                textAlign: TextAlign.center,
+                style: poppins(
+                  fontSize: 12,
+                  color: !_showMarkAttendance ? const Color(0xFF4DA6FF) : Colors.white70,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: GestureDetector(
+            onTap: () {
+              setState(() {
+                _showMarkAttendance = true;
+              });
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              decoration: BoxDecoration(
+                color: _showMarkAttendance
+                    ? const Color(0xFF4DA6FF).withValues(alpha: 0.15)
+                    : Colors.white.withValues(alpha: 0.03),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: _showMarkAttendance
+                      ? const Color(0xFF4DA6FF).withValues(alpha: 0.3)
+                      : Colors.white10,
+                ),
+              ),
+              child: Text(
+                'Mark Attendance',
+                textAlign: TextAlign.center,
+                style: poppins(
+                  fontSize: 12,
+                  color: _showMarkAttendance ? const Color(0xFF4DA6FF) : Colors.white70,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final poppins = GoogleFonts.poppins;
@@ -138,131 +212,144 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
     return Scaffold(
       backgroundColor: Colors.transparent, // transparency for background.png
       body: SafeArea(
-        child: RefreshIndicator(
-          onRefresh: _fetchSummary,
-          color: const Color(0xFF4DA6FF),
-          backgroundColor: const Color(0xFF1A2B4A),
-          child: CustomScrollView(
-            physics: const AlwaysScrollableScrollPhysics(),
-            slivers: [
-              // ── Header Card & Title ──
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                'Attendance Control',
-                                style: poppins(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white),
-                              ),
-                              Text(
-                                'Admin Directory Console',
-                                style: poppins(fontSize: 13, color: const Color(0xFF4DA6FF), fontWeight: FontWeight.w600),
-                              ),
-                            ],
-                          ),
-                          IconButton(
-                            onPressed: _fetchSummary,
-                            icon: const Icon(Icons.sync_rounded, color: Color(0xFF4DA6FF), size: 26),
-                            tooltip: 'Sync Data',
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      // Search Bar
-                      Container(
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-                        ),
-                        child: TextField(
-                          controller: _searchController,
-                          onChanged: (_) => _applyFilters(),
-                          style: poppins(color: Colors.white, fontSize: 14),
-                          decoration: InputDecoration(
-                            hintText: 'Search by name or roll number...',
-                            hintStyle: poppins(color: const Color(0xFF8A9CC2), fontSize: 13),
-                            prefixIcon: const Icon(Icons.search_rounded, color: Color(0xFF4DA6FF)),
-                            border: InputBorder.none,
-                            contentPadding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      // Dropdown Filters Row
-                      Row(
-                        children: [
-                          // Team Filter
-                          Expanded(
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.06),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-                              ),
-                              child: DropdownButtonHideUnderline(
-                                child: DropdownButton<String>(
-                                  value: _selectedTeam,
-                                  dropdownColor: const Color(0xFF1A2B4A),
-                                  icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF4DA6FF), size: 18),
-                                  items: _teams.map((t) => DropdownMenuItem(
-                                    value: t,
-                                    child: Text('Team: $t', style: poppins(fontSize: 12, color: Colors.white, fontWeight: FontWeight.bold)),
-                                  )).toList(),
-                                  onChanged: (val) {
-                                    if (val != null) {
-                                      setState(() => _selectedTeam = val);
-                                      _applyFilters();
-                                    }
-                                  },
-                                ),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          // Role Filter
-                          Expanded(
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12),
-                              decoration: BoxDecoration(
-                                color: Colors.white.withValues(alpha: 0.06),
-                                borderRadius: BorderRadius.circular(10),
-                                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-                              ),
-                              child: DropdownButtonHideUnderline(
-                                child: DropdownButton<String>(
-                                  value: _selectedRole,
-                                  dropdownColor: const Color(0xFF1A2B4A),
-                                  icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF4DA6FF), size: 18),
-                                  items: _roles.map((r) => DropdownMenuItem(
-                                    value: r,
-                                    child: Text('Role: $r', style: poppins(fontSize: 12, color: Colors.white, fontWeight: FontWeight.bold)),
-                                  )).toList(),
-                                  onChanged: (val) {
-                                    if (val != null) {
-                                      setState(() => _selectedRole = val);
-                                      _applyFilters();
-                                    }
-                                  },
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
+        child: _showMarkAttendance
+            ? Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 24, 24, 8),
+                    child: _buildConsoleToggle(poppins),
                   ),
-                ),
-              ),
+                  Expanded(
+                    child: AttendanceTab(userData: widget.userData),
+                  ),
+                ],
+              )
+            : RefreshIndicator(
+                onRefresh: _fetchSummary,
+                color: const Color(0xFF4DA6FF),
+                backgroundColor: const Color(0xFF1A2B4A),
+                child: CustomScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  slivers: [
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(24, 24, 24, 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      'Attendance Control',
+                                      style: poppins(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white),
+                                    ),
+                                    Text(
+                                      'Admin Directory Console',
+                                      style: poppins(fontSize: 13, color: const Color(0xFF4DA6FF), fontWeight: FontWeight.w600),
+                                    ),
+                                  ],
+                                ),
+                                IconButton(
+                                  onPressed: _fetchSummary,
+                                  icon: const Icon(Icons.sync_rounded, color: Color(0xFF4DA6FF), size: 26),
+                                  tooltip: 'Sync Data',
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            _buildConsoleToggle(poppins),
+                            const SizedBox(height: 16),
+                            // Search Bar
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.06),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                              ),
+                              child: TextField(
+                                controller: _searchController,
+                                onChanged: (_) => _applyFilters(),
+                                style: poppins(color: Colors.white, fontSize: 14),
+                                decoration: InputDecoration(
+                                  hintText: 'Search by name or roll number...',
+                                  hintStyle: poppins(color: const Color(0xFF8A9CC2), fontSize: 13),
+                                  prefixIcon: const Icon(Icons.search_rounded, color: Color(0xFF4DA6FF)),
+                                  border: InputBorder.none,
+                                  contentPadding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            // Dropdown Filters Row
+                            Row(
+                              children: [
+                                // Team Filter
+                                Expanded(
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(alpha: 0.06),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                                    ),
+                                    child: DropdownButtonHideUnderline(
+                                      child: DropdownButton<String>(
+                                        value: _selectedTeam,
+                                        dropdownColor: const Color(0xFF1A2B4A),
+                                        icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF4DA6FF), size: 18),
+                                        items: _teams.map((t) => DropdownMenuItem(
+                                          value: t,
+                                          child: Text('Team: $t', style: poppins(fontSize: 12, color: Colors.white, fontWeight: FontWeight.bold)),
+                                        )).toList(),
+                                        onChanged: (val) {
+                                          if (val != null) {
+                                            setState(() => _selectedTeam = val);
+                                            _applyFilters();
+                                          }
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 10),
+                                // Role Filter
+                                Expanded(
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(alpha: 0.06),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                                    ),
+                                    child: DropdownButtonHideUnderline(
+                                      child: DropdownButton<String>(
+                                        value: _selectedRole,
+                                        dropdownColor: const Color(0xFF1A2B4A),
+                                        icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF4DA6FF), size: 18),
+                                        items: _roles.map((r) => DropdownMenuItem(
+                                          value: r,
+                                          child: Text('Role: $r', style: poppins(fontSize: 12, color: Colors.white, fontWeight: FontWeight.bold)),
+                                        )).toList(),
+                                        onChanged: (val) {
+                                          if (val != null) {
+                                            setState(() => _selectedRole = val);
+                                            _applyFilters();
+                                          }
+                                        },
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
 
               // ── Data Content ──
               if (_isLoading)
