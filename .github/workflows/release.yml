@@ -58,10 +58,10 @@ jobs:
           retention-days: 7
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JOB 2 ─ Build Windows MSIX
+# JOB 2 ─ Build Windows Installer
 # ─────────────────────────────────────────────────────────────────────────────
   build-windows:
-    name: 🪟 Build Windows MSIX
+    name: 🪟 Build Windows EXE
     runs-on: windows-latest
 
     steps:
