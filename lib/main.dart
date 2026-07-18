@@ -33,6 +33,8 @@ import 'update_coordinates_page.dart';
 import 'user_profile_details_form_page.dart';
 import 'apply_leave_page.dart';
 import 'update_checker.dart';
+import 'developer_support_page.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -3149,6 +3151,24 @@ class _ProfileTabState extends State<ProfileTab> {
                 const SizedBox(height: 10),
               ],
 
+              // Developer & Support (All Roles)
+              _buildProfileNavButton(
+                icon: Icons.contact_support_outlined,
+                label: 'Support & Developer',
+                subtitle: 'Contact developer & app support',
+                color: const Color(0xFF00E5FF),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const DesktopPageWrapper(
+                      child: DeveloperSupportPage(),
+                    ),
+                  ),
+                ),
+                poppins: poppins,
+              ),
+              const SizedBox(height: 10),
+
               const SizedBox(height: 14),
 
               // Logout Button
@@ -3171,6 +3191,25 @@ class _ProfileTabState extends State<ProfileTab> {
                     elevation: 0,
                   ),
                 ),
+              ),
+              const SizedBox(height: 16),
+              FutureBuilder<PackageInfo>(
+                future: PackageInfo.fromPlatform(),
+                builder: (context, snapshot) {
+                  final String versionStr = snapshot.hasData
+                      ? 'Version ${snapshot.data!.version} (${snapshot.data!.buildNumber})'
+                      : 'Version 1.0.7';
+                  return Center(
+                    child: Text(
+                      versionStr,
+                      style: poppins(
+                        fontSize: 12,
+                        color: Colors.white30,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  );
+                },
               ),
               const SizedBox(height: 20),
             ],
