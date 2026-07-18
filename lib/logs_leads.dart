@@ -370,6 +370,15 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
             ).timeout(const Duration(seconds: 5));
             if (res.statusCode == 200 && mounted) {
               final data = jsonDecode(res.body);
+              if (data['session_stopped'] == true) {
+                setState(() {
+                  _isWorking = false;
+                  _startTime = null;
+                });
+                _locationTimer?.cancel();
+                _showSnack('Your work session has been ended by Admin.', type: ToastType.warning);
+                return;
+              }
               if (data['status_changed'] == true) {
                 // A real state change happened on the backend — update & show snackbar
                 final isPaused = data['is_paused'] == true;

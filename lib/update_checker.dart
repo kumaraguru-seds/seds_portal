@@ -352,6 +352,9 @@ class UpdateChecker {
       // Launch Android package installer / Windows exe setup
       final result = await OpenFile.open(savePath);
       debugPrint('[UpdateChecker] OpenFile result: ${result.message}');
+      if (Platform.isWindows) {
+        exit(0);
+      }
     } catch (e) {
       debugPrint('[UpdateChecker] Download failed: $e');
 

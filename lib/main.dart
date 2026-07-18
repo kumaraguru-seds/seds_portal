@@ -33,9 +33,7 @@ import 'update_coordinates_page.dart';
 import 'user_profile_details_form_page.dart';
 import 'apply_leave_page.dart';
 import 'update_checker.dart';
-import 'crypto_helper.dart';
 import 'package:file_picker/file_picker.dart';
-import 'chat_tab.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 class Platform {
@@ -862,7 +860,6 @@ class _MainPageState extends State<MainPage> {
     if (isAdmin) {
       _pages = <Widget>[
         HomeTab(userData: widget.userData),
-        ChatTab(userData: widget.userData),
         AttendanceAdminTab(userData: widget.userData),
         DailyLogsTab(userData: widget.userData),
         StatisticsPage(userData: widget.userData),
@@ -871,7 +868,6 @@ class _MainPageState extends State<MainPage> {
     } else {
       _pages = <Widget>[
         HomeTab(userData: widget.userData),
-        ChatTab(userData: widget.userData),
         isLead
             ? AttendanceTab(userData: widget.userData)
             : AttendanceMembersTab(userData: widget.userData),
@@ -894,10 +890,7 @@ class _MainPageState extends State<MainPage> {
       });
     });
 
-    // Auto-initialize E2EE Keys so they are always configured immediately upon login/startup
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _initE2EEKeys();
-    });
+
   }
 
   @override
@@ -906,62 +899,7 @@ class _MainPageState extends State<MainPage> {
     super.dispose();
   }
 
-  Future<void> _initE2EEKeys() async {
-    final email = widget.userData?.email.toLowerCase().trim();
-    if (email == null) return;
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      String? localPriv = prefs.getString('e2ee_private_key');
-      String? localPub = prefs.getString('e2ee_public_key');
 
-      if (localPriv == null || localPub == null) {
-        // 1. Check if server has bootstrapped keys for this user
-        final bootstrapUrl = Uri.parse('$apiBaseUrl/api/chat/bootstrap-private-key?email=$email');
-        final response = await http.get(bootstrapUrl);
-        if (response.statusCode == 200) {
-          final data = jsonDecode(response.body);
-          if (data['success'] == true && data['private_key'] != null) {
-            localPriv = data['private_key'];
-            // Since we know the private key, we must also fetch the public key
-            final pubKeyUrl = Uri.parse('$apiBaseUrl/api/chat/public-keys?emails=$email');
-            final pubRes = await http.get(pubKeyUrl);
-            if (pubRes.statusCode == 200) {
-              final pubData = jsonDecode(pubRes.body);
-              final keysList = pubData['keys'] as List;
-              if (keysList.isNotEmpty) {
-                localPub = keysList[0]['public_key'];
-                // Save to local preferences
-                await prefs.setString('e2ee_private_key', localPriv!);
-                await prefs.setString('e2ee_public_key', localPub!);
-                debugPrint('[E2EE] Downloaded and restored bootstrapped keypair.');
-              }
-            }
-          }
-        }
-      }
-
-      // 2. If we still don't have local keys, generate new ones locally
-      if (localPriv == null || localPub == null) {
-        final keys = await CryptoHelper.getOrGenerateKeys();
-        localPriv = keys['private']!;
-        localPub = keys['public']!;
-      }
-
-      // 3. Upload/Refresh public key on the server
-      final url = Uri.parse('$apiBaseUrl/api/chat/public-key');
-      await http.post(
-        url,
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'email': email,
-          'public_key': localPub,
-        }),
-      );
-      debugPrint('[E2EE] Keys successfully auto-initialized and uploaded.');
-    } catch (e) {
-      debugPrint('[E2EE] Error auto-initializing keys: $e');
-    }
-  }
 
   Future<void> _checkProfileCompletion() async {
     final email = widget.userData?.email;
@@ -1033,10 +971,9 @@ class _MainPageState extends State<MainPage> {
             if (mounted) setState(() {});
           },
         ),
-        ChatTab(userData: uData),
         AttendanceAdminTab(userData: uData),
         DailyLogsTab(userData: uData),
-        StatisticsPage(userData: uData, isActive: _currentIndex == 4),
+        StatisticsPage(userData: uData, isActive: _currentIndex == 3),
         ProfileTab(userData: uData),
       ];
     } else {
@@ -1047,12 +984,11 @@ class _MainPageState extends State<MainPage> {
             if (mounted) setState(() {});
           },
         ),
-        ChatTab(userData: uData),
         isLead
             ? AttendanceTab(userData: uData)
             : AttendanceMembersTab(userData: uData),
         DailyLogsTab(userData: uData),
-        StatisticsPage(userData: uData, isActive: _currentIndex == 4),
+        StatisticsPage(userData: uData, isActive: _currentIndex == 3),
         ProfileTab(userData: uData),
       ];
     }
@@ -1137,7 +1073,6 @@ class _MainPageState extends State<MainPage> {
                                       });
                                       final pages = [
                                         'Home',
-                                        'Chat',
                                         'Attendance',
                                         'Daily Logs',
                                         'Statistics',
@@ -1162,7 +1097,6 @@ class _MainPageState extends State<MainPage> {
                             });
                             final pages = [
                               'Home',
-                              'Chat',
                               'Attendance',
                               'Daily Logs',
                               'Statistics',
@@ -1197,7 +1131,6 @@ class _MainPageState extends State<MainPage> {
                 });
                 final pages = [
                   'Home',
-                  'Chat',
                   'Attendance',
                   'Daily Logs',
                   'Statistics',
@@ -1269,11 +1202,6 @@ class SEDSFloatingNavigationBar extends StatelessWidget {
         icon: Icons.home_outlined,
         activeIcon: Icons.home,
         label: 'Home',
-      ),
-      const _NavItem(
-        icon: Icons.chat_bubble_outline_rounded,
-        activeIcon: Icons.chat_bubble_rounded,
-        label: 'Chat',
       ),
       const _NavItem(
         icon: Icons.calendar_today_outlined,

@@ -12,6 +12,9 @@ Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
+SetupIconFile=windows\runner\resources\app_icon.ico
+DirExistsWarning=no
+CloseApplications=force
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"

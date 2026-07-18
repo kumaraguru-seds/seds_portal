@@ -28,6 +28,7 @@ class _StatisticsPageState extends State<StatisticsPage>
   List<String> _leadTeams = [];
   String _selectedStatsTeam = 'All';
   int _selectedBarIndex = -1;
+  final Map<String, String> _cardSelectedTeams = {};
 
   @override
   void didUpdateWidget(covariant StatisticsPage oldWidget) {
@@ -65,7 +66,6 @@ class _StatisticsPageState extends State<StatisticsPage>
     try {
       String url = '$apiBaseUrl/api/stats/performance-summary';
 
-      final userTeams = widget.userData?.teams ?? [];
 
       if (_isMember) {
         final memberTeams = (widget.userData?.team ?? '')
@@ -109,7 +109,7 @@ class _StatisticsPageState extends State<StatisticsPage>
 
         url +=
             '?team=${Uri.encodeComponent(memberTeams.isNotEmpty ? memberTeams.first : '')}';
-      } else if (_isLead || (_isAdmin && userTeams.isNotEmpty)) {
+      } else if (_isLead) {
         final teamList = (widget.userData?.team ?? '')
             .split(',')
             .map((t) => t.trim())
@@ -123,8 +123,7 @@ class _StatisticsPageState extends State<StatisticsPage>
         }
 
         if (teamList.length > 1) {
-          final List<Map<String, dynamic>> combined = [];
-          final Set<String> seen = {};
+          final Map<String, Map<String, dynamic>> emailToUser = {};
           for (final t in teamList) {
             final teamUrl =
                 '$apiBaseUrl/api/stats/performance-summary?team=${Uri.encodeComponent(t)}';
@@ -137,14 +136,40 @@ class _StatisticsPageState extends State<StatisticsPage>
                 teamData['users'] ?? [],
               );
               for (var tu in teamUsers) {
-                final key = '${tu['email']}_${tu['team']}'.toLowerCase();
-                if (!seen.contains(key)) {
-                  seen.add(key);
-                  combined.add(tu);
+                final email = (tu['email'] as String? ?? '').toLowerCase().trim();
+                if (email.isEmpty) continue;
+                if (!emailToUser.containsKey(email)) {
+                  emailToUser[email] = tu;
+                } else {
+                  // Merge teams
+                  final existing = emailToUser[email]!;
+                  final List<String> existingTeams = (existing['team'] as String? ?? '')
+                      .split(',')
+                      .map((x) => x.trim())
+                      .where((x) => x.isNotEmpty)
+                      .toList();
+                  final List<String> newTeams = (tu['team'] as String? ?? '')
+                      .split(',')
+                      .map((x) => x.trim())
+                      .where((x) => x.isNotEmpty)
+                      .toList();
+                  for (final nt in newTeams) {
+                    if (!existingTeams.contains(nt)) {
+                      existingTeams.add(nt);
+                    }
+                  }
+                  existing['team'] = existingTeams.join(', ');
+
+                  // Merge team_stats
+                  final Map<String, dynamic> existingTeamStats = Map<String, dynamic>.from(existing['team_stats'] ?? {});
+                  final Map<String, dynamic> newTeamStats = Map<String, dynamic>.from(tu['team_stats'] ?? {});
+                  existingTeamStats.addAll(newTeamStats);
+                  existing['team_stats'] = existingTeamStats;
                 }
               }
             }
           }
+          final combined = emailToUser.values.toList();
           if (mounted) {
             setState(() {
               _allUsers = combined;
@@ -177,6 +202,26 @@ class _StatisticsPageState extends State<StatisticsPage>
               .toList();
         }
 
+        if (_isAdmin) {
+          final Set<String> extractedTeams = {};
+          for (var u in users) {
+            final String? t = u['team'];
+            if (t != null && t.isNotEmpty) {
+              for (var part in t.split(',')) {
+                final trimmed = part.trim();
+                if (trimmed.isNotEmpty) {
+                  extractedTeams.add(trimmed);
+                }
+              }
+            }
+          }
+          if (mounted) {
+            setState(() {
+              _leadTeams = extractedTeams.toList()..sort();
+            });
+          }
+        }
+
         if (mounted) {
           setState(() {
             _allUsers = users;
@@ -203,10 +248,13 @@ class _StatisticsPageState extends State<StatisticsPage>
             team.contains(_searchQuery) ||
             roll.contains(_searchQuery);
 
+        final List<String> userTeamsList = team
+            .split(',')
+            .map((t) => t.trim().toLowerCase())
+            .toList();
         final matchesTeam =
             _selectedStatsTeam == 'All' ||
-            team.trim().toLowerCase() ==
-                _selectedStatsTeam.trim().toLowerCase();
+            userTeamsList.contains(_selectedStatsTeam.trim().toLowerCase());
 
         return matchesSearch && matchesTeam;
       }).toList();
@@ -380,7 +428,7 @@ class _StatisticsPageState extends State<StatisticsPage>
                             ),
                           ),
                         ),
-                        if (_leadTeams.length > 1) ...[
+                        if (_isAdmin || _leadTeams.length > 1) ...[
                           const SizedBox(height: 8),
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -776,55 +824,127 @@ class _StatisticsPageState extends State<StatisticsPage>
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Text(
-                        'Top Performer',
-                        style: poppins(
-                          color: const Color(0xFFFFD93D),
-                          fontSize: 11.0,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(
-                            0xFFFFD93D,
-                          ).withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          u['role'] as String? ?? '',
+              child: Builder(builder: (context) {
+                final List<String> performerTeams = (u['team'] as String? ?? '')
+                    .split(',')
+                    .map((t) => t.trim())
+                    .where((t) => t.isNotEmpty)
+                    .toList();
+                final selectedPerformerTeam = _cardSelectedTeams[u['email']] ?? (performerTeams.isNotEmpty ? performerTeams.first : '');
+                final Map<String, dynamic>? performerStatsMap = u['team_stats'] != null ? Map<String, dynamic>.from(u['team_stats']) : null;
+                final Map<String, dynamic>? selectedPerformerStats = (performerStatsMap != null && selectedPerformerTeam.isNotEmpty)
+                    ? performerStatsMap[selectedPerformerTeam] != null ? Map<String, dynamic>.from(performerStatsMap[selectedPerformerTeam]) : null
+                    : null;
+
+                final totalSec = selectedPerformerStats != null
+                    ? selectedPerformerStats['total_seconds'] as int? ?? 0
+                    : u['total_seconds'] as int? ?? 0;
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          'Top Performer',
                           style: poppins(
                             color: const Color(0xFFFFD93D),
-                            fontSize: 9.0,
+                            fontSize: 11.0,
+                            fontWeight: FontWeight.bold,
                           ),
                         ),
-                      ),
-                    ],
-                  ),
-                  Text(
-                    u['name'] as String? ?? '',
-                    style: poppins(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14.0,
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(
+                              0xFFFFD93D,
+                            ).withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Text(
+                            u['role'] as String? ?? '',
+                            style: poppins(
+                              color: const Color(0xFFFFD93D),
+                              fontSize: 9.0,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ),
-                  Text(
-                    '${u['team'] ?? ''} · ${_fmtSeconds(u['total_seconds'] as int? ?? 0)} worked',
-                    style: poppins(color: Colors.white70, fontSize: 11.0),
-                  ),
-                ],
-              ),
+                    Text(
+                      u['name'] as String? ?? '',
+                      style: poppins(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14.0,
+                      ),
+                    ),
+                    Text(
+                      u['email'] as String? ?? '',
+                      style: poppins(
+                        color: const Color(0xFF4DA6FF),
+                        fontSize: 10.0,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Container(
+                          height: 24,
+                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1A2B4A),
+                            borderRadius: BorderRadius.circular(6),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.15),
+                            ),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: selectedPerformerTeam.isNotEmpty ? selectedPerformerTeam : null,
+                              icon: const Icon(
+                                Icons.arrow_drop_down,
+                                color: Color(0xFFFFD93D),
+                                size: 16,
+                              ),
+                              style: poppins(
+                                color: Colors.white,
+                                fontSize: 10.0,
+                                fontWeight: FontWeight.w600,
+                              ),
+                              dropdownColor: const Color(0xFF1A2B4A),
+                              alignment: Alignment.centerLeft,
+                              isDense: true,
+                              items: performerTeams.map((t) {
+                                return DropdownMenuItem<String>(
+                                  value: t,
+                                  child: Text('$t Team'),
+                                );
+                              }).toList(),
+                              onChanged: (val) {
+                                if (val != null) {
+                                  setState(() {
+                                    _cardSelectedTeams[u['email']] = val;
+                                  });
+                                }
+                              },
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          '·  ${_fmtSeconds(totalSec)} worked',
+                          style: poppins(color: Colors.white70, fontSize: 11.0),
+                        ),
+                      ],
+                    ),
+                  ],
+                );
+              }),
             ),
           ],
         ),
@@ -838,13 +958,36 @@ class _StatisticsPageState extends State<StatisticsPage>
     double maxSec,
     dynamic poppins,
   ) {
-    final totalSec = u['total_seconds'] as int? ?? 0;
-    final weekSec = u['week_seconds'] as int? ?? 0;
+    final List<String> userTeams = (u['team'] as String? ?? '')
+        .split(',')
+        .map((t) => t.trim())
+        .where((t) => t.isNotEmpty)
+        .toList();
+    final selectedTeam = _cardSelectedTeams[u['email']] ?? (userTeams.isNotEmpty ? userTeams.first : '');
+    final Map<String, dynamic>? teamStatsMap = u['team_stats'] != null ? Map<String, dynamic>.from(u['team_stats']) : null;
+    final Map<String, dynamic>? selectedStats = (teamStatsMap != null && selectedTeam.isNotEmpty)
+        ? teamStatsMap[selectedTeam] != null ? Map<String, dynamic>.from(teamStatsMap[selectedTeam]) : null
+        : null;
+
+    final totalSec = selectedStats != null
+        ? selectedStats['total_seconds'] as int? ?? 0
+        : u['total_seconds'] as int? ?? 0;
+    final weekSec = selectedStats != null
+        ? selectedStats['week_seconds'] as int? ?? 0
+        : u['week_seconds'] as int? ?? 0;
     final loginCount = u['login_count'] as int? ?? 0;
-    final attPct = (u['attendance_pct'] as num? ?? 100.0).toDouble();
-    final sessions = u['total_sessions'] as int? ?? 0;
-    final attPresent = u['attendance_present'] as int? ?? 0;
-    final attTotal = u['attendance_total'] as int? ?? 0;
+    final attPct = selectedStats != null
+        ? (selectedStats['attendance_pct'] as num? ?? 0.0).toDouble()
+        : (u['attendance_pct'] as num? ?? 100.0).toDouble();
+    final sessions = selectedStats != null
+        ? selectedStats['total_sessions'] as int? ?? 0
+        : u['total_sessions'] as int? ?? 0;
+    final attPresent = selectedStats != null
+        ? selectedStats['attendance_present'] as int? ?? 0
+        : u['attendance_present'] as int? ?? 0;
+    final attTotal = selectedStats != null
+        ? selectedStats['attendance_total'] as int? ?? 0
+        : u['attendance_total'] as int? ?? 0;
 
     final barRatio = maxSec > 0 ? (totalSec / maxSec).clamp(0.0, 1.0) : 0.0;
     final attRatio = attPct / 100.0;
@@ -925,19 +1068,53 @@ class _StatisticsPageState extends State<StatisticsPage>
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            u['name'] as String? ?? '',
-                            style: poppins(
-                              color: Colors.white,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 13.0,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          Text(
-                            '${u['team'] ?? ''} · ${u['roll_number'] ?? ''}',
+                            'Roll: ${u['roll_number'] ?? ''}',
                             style: poppins(
                               color: Colors.white54,
                               fontSize: 10.0,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Container(
+                            height: 24,
+                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF1A2B4A),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.15),
+                              ),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: selectedTeam.isNotEmpty ? selectedTeam : null,
+                                icon: const Icon(
+                                  Icons.arrow_drop_down,
+                                  color: Color(0xFF4DA6FF),
+                                  size: 16,
+                                ),
+                                style: poppins(
+                                  color: Colors.white,
+                                  fontSize: 10.0,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                                dropdownColor: const Color(0xFF1A2B4A),
+                                alignment: Alignment.centerLeft,
+                                isDense: true,
+                                items: userTeams.map((t) {
+                                  return DropdownMenuItem<String>(
+                                    value: t,
+                                    child: Text('$t Team'),
+                                  );
+                                }).toList(),
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setState(() {
+                                      _cardSelectedTeams[u['email']] = val;
+                                    });
+                                  }
+                                },
+                              ),
                             ),
                           ),
                         ],

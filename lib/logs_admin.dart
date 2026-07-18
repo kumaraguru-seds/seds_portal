@@ -5,6 +5,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import 'main.dart';
+import 'app_toast.dart';
 
 // ─────────────── Admin Logs Page ───────────────
 class LogsAdminPage extends StatefulWidget {
@@ -158,6 +159,71 @@ class _LogsAdminPageState extends State<LogsAdminPage> {
     ]);
   }
 
+  Future<void> _stopSessionByAdmin(Map<String, dynamic> log) async {
+    final email = log['user_email'];
+    if (email == null) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1A2B4A),
+        title: Text(
+          'Confirm Stop Session',
+          style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.bold),
+        ),
+        content: Text(
+          'Are you sure you want to stop ${log['user_name'] ?? 'this member'}\'s active session?',
+          style: GoogleFonts.poppins(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: Text('Cancel', style: GoogleFonts.poppins(color: Colors.white54)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFFFF6B6B)),
+            child: Text('Stop Session', style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    if (!mounted) return;
+    setState(() => _isLoading = true);
+    try {
+      final res = await http.post(
+        Uri.parse('$apiBaseUrl/api/logs/stop'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'user_email': email,
+          'summary': 'Stopped by Admin',
+          'session_id': log['id'],
+        }),
+      );
+      if (!mounted) return;
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (data['success'] == true) {
+          AppToast.show(context, 'Session stopped successfully.', type: ToastType.success);
+        } else {
+          AppToast.show(context, data['message'] ?? 'Failed to stop session.', type: ToastType.error);
+        }
+      } else {
+        AppToast.show(context, 'Server error stopping session.', type: ToastType.error);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.show(context, 'Network error stopping session.', type: ToastType.error);
+    } finally {
+      if (mounted) {
+        _refreshAll();
+      }
+    }
+  }
+
   String _formatDuration(int? seconds) {
     if (seconds == null || seconds <= 0) return '0h 0m 0s';
     final h = seconds ~/ 3600;
@@ -265,6 +331,7 @@ class _LogsAdminPageState extends State<LogsAdminPage> {
                                           log: log,
                                           poppins: poppins,
                                           formatDateTime: _formatDateTime,
+                                          onStopPressed: () => _stopSessionByAdmin(log),
                                         );
                                       },
                                     ),
@@ -772,12 +839,14 @@ class AdminLiveLogTile extends StatefulWidget {
   final Map<String, dynamic> log;
   final TextStyle Function({Color? color, double? fontSize, FontWeight? fontWeight, double? letterSpacing}) poppins;
   final String Function(String?) formatDateTime;
+  final VoidCallback? onStopPressed;
 
   const AdminLiveLogTile({
     super.key,
     required this.log,
     required this.poppins,
     required this.formatDateTime,
+    this.onStopPressed,
   });
 
   @override
@@ -1027,31 +1096,49 @@ class _AdminLiveLogTileState extends State<AdminLiveLogTile> {
                   ),
                 ],
               ),
-              ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (context) => DesktopPageWrapper(
-                        child: LiveUserMapPage(
-                          userEmail: log['user_email'] ?? '',
-                          userName: log['user_name'] ?? 'User',
-                          userRole: log['role'] ?? 'Member',
-                          isLiveUser: true,
-                        ),
-                      ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: widget.onStopPressed,
+                    icon: const Icon(Icons.stop_circle_rounded, size: 14, color: Colors.white),
+                    label: Text('Stop', style: widget.poppins(fontSize: 11, color: Colors.white, fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFFFF6B6B),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                     ),
-                  );
-                },
-                icon: const Icon(Icons.location_on_rounded, size: 14, color: Colors.white),
-                label: Text('Track Live', style: widget.poppins(fontSize: 11, color: Colors.white, fontWeight: FontWeight.bold)),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFF4DA6FF),
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  minimumSize: Size.zero,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                ),
+                  ),
+                  const SizedBox(width: 8),
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => DesktopPageWrapper(
+                            child: LiveUserMapPage(
+                              userEmail: log['user_email'] ?? '',
+                              userName: log['user_name'] ?? 'User',
+                              userRole: log['role'] ?? 'Member',
+                              isLiveUser: true,
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.location_on_rounded, size: 14, color: Colors.white),
+                    label: Text('Track Live', style: widget.poppins(fontSize: 11, color: Colors.white, fontWeight: FontWeight.bold)),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF4DA6FF),
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                  ),
+                ],
               ),
             ],
           ),
