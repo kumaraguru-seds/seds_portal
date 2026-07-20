@@ -15,22 +15,80 @@ class LogsAdminPage extends StatefulWidget {
   State<LogsAdminPage> createState() => _LogsAdminPageState();
 }
 
-class _LogsAdminPageState extends State<LogsAdminPage> {
+class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProviderStateMixin {
   bool _isLoading = true;
   bool _loadingSummary = true;
   List<Map<String, dynamic>> _allLogs = [];
   List<Map<String, dynamic>> _adminSummaryUsers = [];
   String _selectedTeam = 'All';
   String _selectedRoleFilter = 'All Roles';
+  String _selectedWeekFilter = 'This Week';
   List<String> _teams = ['All', 'PR', 'Media', 'Events', 'Web Dev', 'Admin'];
   final List<String> _roles = ['All Roles', 'Leads Only', 'Members Only'];
   final TextEditingController _searchCtrl = TextEditingController();
   Timer? _refreshTimer;
   io.Socket? _socket;
+  TabController? _tabController;
+
+  Map<String, DateTimeRange> _getWeekRanges() {
+    final now = DateTime.now();
+    final int daysSinceSunday = now.weekday == 7 ? 0 : now.weekday;
+    final DateTime sundayThisWeek = DateTime(now.year, now.month, now.day).subtract(Duration(days: daysSinceSunday));
+    
+    final ranges = <String, DateTimeRange>{};
+    
+    // This Week
+    final startThis = sundayThisWeek;
+    final endThis = sundayThisWeek.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+    ranges['This Week'] = DateTimeRange(start: startThis, end: endThis);
+    
+    // Last Week
+    final startLast = sundayThisWeek.subtract(const Duration(days: 7));
+    final endLast = startLast.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+    ranges['Last Week'] = DateTimeRange(start: startLast, end: endLast);
+
+    // 2 Weeks Ago
+    final start2Ago = sundayThisWeek.subtract(const Duration(days: 14));
+    final end2Ago = start2Ago.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+    ranges['2 Weeks Ago'] = DateTimeRange(start: start2Ago, end: end2Ago);
+
+    // 3 Weeks Ago
+    final start3Ago = sundayThisWeek.subtract(const Duration(days: 21));
+    final end3Ago = start3Ago.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+    ranges['3 Weeks Ago'] = DateTimeRange(start: start3Ago, end: end3Ago);
+    
+    return ranges;
+  }
+
+  String _getWeekLabel(String key, DateTimeRange range) {
+    final sDay = range.start.day.toString().padLeft(2, '0');
+    final sMonth = range.start.month.toString().padLeft(2, '0');
+    final eDay = range.end.day.toString().padLeft(2, '0');
+    final eMonth = range.end.month.toString().padLeft(2, '0');
+    return '$key (Sun $sDay/$sMonth to Sat $eDay/$eMonth)';
+  }
+
+  bool _isSessionInSelectedWeek(String? startTimeStr) {
+    if (_selectedWeekFilter == 'All') return true;
+    if (startTimeStr == null) return false;
+    final dt = DateTime.tryParse(startTimeStr)?.toLocal();
+    if (dt == null) return false;
+    
+    final ranges = _getWeekRanges();
+    final range = ranges[_selectedWeekFilter];
+    if (range == null) return true;
+    
+    return (dt.isAfter(range.start) || dt.isAtSameMomentAs(range.start)) && 
+           (dt.isBefore(range.end) || dt.isAtSameMomentAs(range.end));
+  }
 
   @override
   void initState() {
     super.initState();
+    _tabController = TabController(length: 3, vsync: this);
+    _tabController!.addListener(() {
+      if (mounted) setState(() {});
+    });
     _loadTeams();
     _fetchLogs();
     _fetchSummary();
@@ -63,6 +121,7 @@ class _LogsAdminPageState extends State<LogsAdminPage> {
   void dispose() {
     _searchCtrl.dispose();
     _refreshTimer?.cancel();
+    _tabController?.dispose();
     _disposeSocket();
     super.dispose();
   }
@@ -258,7 +317,10 @@ class _LogsAdminPageState extends State<LogsAdminPage> {
 
     // Filter into live working sessions and historical entries
     final activeLogs = _allLogs.where((l) => l['is_active'] == true).toList();
-    final completedLogs = _allLogs.where((l) => l['is_active'] != true).toList();
+    final completedLogs = _allLogs.where((l) {
+      if (l['is_active'] == true) return false;
+      return _isSessionInSelectedWeek(l['start_time']);
+    }).toList();
 
     // Filter Worked Hours summary list
     final filteredSummaryUsers = _adminSummaryUsers.where((u) {
@@ -281,30 +343,30 @@ class _LogsAdminPageState extends State<LogsAdminPage> {
       return true;
     }).toList();
 
-    return DefaultTabController(
-      length: 3,
-      child: Scaffold(
+    return Scaffold(
+      backgroundColor: Colors.transparent,
+      appBar: AppBar(
         backgroundColor: Colors.transparent,
-        appBar: AppBar(
-          backgroundColor: Colors.transparent,
-          elevation: 0,
-          title: Text('Work Logs (Admin)', style: poppins(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
-          bottom: TabBar(
-            indicatorColor: const Color(0xFF4DA6FF),
-            labelColor: const Color(0xFF4DA6FF),
-            unselectedLabelColor: Colors.white54,
-            labelStyle: poppins(fontWeight: FontWeight.bold, fontSize: 13),
-            tabs: const [
-              Tab(text: 'Real-time Live'),
-              Tab(text: 'Session History'),
-              Tab(text: 'Worked Hours'),
-            ],
-          ),
+        elevation: 0,
+        title: Text('Work Logs (Admin)', style: poppins(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
+        bottom: TabBar(
+          controller: _tabController,
+          indicatorColor: const Color(0xFF4DA6FF),
+          labelColor: const Color(0xFF4DA6FF),
+          unselectedLabelColor: Colors.white54,
+          labelStyle: poppins(fontWeight: FontWeight.bold, fontSize: 13),
+          tabs: const [
+            Tab(text: 'Real-time Live'),
+            Tab(text: 'Session History'),
+            Tab(text: 'Worked Hours'),
+          ],
         ),
-        body: Column(
-          children: [
-            Expanded(
-              child: TabBarView(
+      ),
+      body: Column(
+        children: [
+          Expanded(
+            child: TabBarView(
+              controller: _tabController,
                 children: [
                   // ── Tab 1: Live Logs ──
                   Column(
@@ -562,7 +624,9 @@ class _LogsAdminPageState extends State<LogsAdminPage> {
                                       itemCount: filteredSummaryUsers.length,
                                       itemBuilder: (context, idx) {
                                         final u = filteredSummaryUsers[idx];
-                                        final sessions = u['sessions'] as List? ?? [];
+                                        final sessions = (u['sessions'] as List? ?? []).where((s) {
+                                          return _isSessionInSelectedWeek(s['start_time']);
+                                        }).toList();
                                         int totalSeconds = 0;
                                         for (final s in sessions) {
                                           if (s['is_active'] == true) {
@@ -771,62 +835,108 @@ class _LogsAdminPageState extends State<LogsAdminPage> {
             ),
           ],
         ),
-      ),
-    );
+      );
   }
 
   Widget _buildSearchAndTeamFilter(TextStyle Function({Color? color, double? fontSize, FontWeight? fontWeight, double? letterSpacing}) poppins) {
+    final showWeekFilter = _tabController != null && _tabController!.index != 0;
+    final weekRanges = _getWeekRanges();
+    final weekKeys = ['All', 'This Week', 'Last Week', '2 Weeks Ago', '3 Weeks Ago'];
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
-      child: Row(
+      child: Column(
         children: [
-          Expanded(
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
-              ),
-              child: TextField(
-                controller: _searchCtrl,
-                style: poppins(color: Colors.white, fontSize: 13),
-                decoration: InputDecoration(
-                  hintText: 'Search user, roll, team…',
-                  hintStyle: poppins(color: Colors.white38, fontSize: 12),
-                  prefixIcon: const Icon(Icons.search, color: Color(0xFF4DA6FF), size: 18),
-                  border: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 10),
+          // Row 1: Search box
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10),
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.06),
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
             ),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                value: _selectedTeam,
-                dropdownColor: const Color(0xFF1A2B4A),
-                icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF4DA6FF), size: 20),
-                items: _teams.map((t) {
-                  return DropdownMenuItem<String>(
-                    value: t,
-                    child: Text(t, style: poppins(fontSize: 13, color: Colors.white, fontWeight: FontWeight.bold)),
-                  );
-                }).toList(),
-                onChanged: (val) {
-                  if (val != null) {
-                    setState(() => _selectedTeam = val);
-                    _fetchLogs();
-                  }
-                },
+            child: TextField(
+              controller: _searchCtrl,
+              style: poppins(color: Colors.white, fontSize: 13),
+              decoration: InputDecoration(
+                hintText: 'Search user, roll, team…',
+                hintStyle: poppins(color: Colors.white38, fontSize: 12),
+                prefixIcon: const Icon(Icons.search, color: Color(0xFF4DA6FF), size: 18),
+                border: InputBorder.none,
+                contentPadding: const EdgeInsets.symmetric(vertical: 12),
               ),
             ),
+          ),
+          const SizedBox(height: 10),
+          // Row 2: Dropdowns
+          Row(
+            children: [
+              // Team Filter Dropdown
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.06),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      value: _selectedTeam,
+                      isExpanded: true,
+                      dropdownColor: const Color(0xFF1A2B4A),
+                      icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF4DA6FF), size: 20),
+                      items: _teams.map((t) {
+                        return DropdownMenuItem<String>(
+                          value: t,
+                          child: Text('Team: $t', style: poppins(fontSize: 12, color: Colors.white, fontWeight: FontWeight.bold)),
+                        );
+                      }).toList(),
+                      onChanged: (val) {
+                        if (val != null) {
+                          setState(() => _selectedTeam = val);
+                          _fetchLogs();
+                        }
+                      },
+                    ),
+                  ),
+                ),
+              ),
+              if (showWeekFilter) ...[
+                const SizedBox(width: 10),
+                // Week Filter Dropdown
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.06),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: _selectedWeekFilter,
+                        isExpanded: true,
+                        dropdownColor: const Color(0xFF1A2B4A),
+                        icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF4DA6FF), size: 20),
+                        items: weekKeys.map((k) {
+                          final range = weekRanges[k];
+                          final label = (k == 'All' || range == null) ? 'All (Last 30 Days)' : _getWeekLabel(k, range);
+                          return DropdownMenuItem<String>(
+                            value: k,
+                            child: Text(label, style: poppins(fontSize: 11, color: Colors.white, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
+                          );
+                        }).toList(),
+                        onChanged: (val) {
+                          if (val != null) {
+                            setState(() => _selectedWeekFilter = val);
+                          }
+                        },
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ],
           ),
         ],
       ),

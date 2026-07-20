@@ -124,7 +124,7 @@ void backgroundServiceOnStart(ServiceInstance service) async {
       }
 
       final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
+        desiredAccuracy: LocationAccuracy.best,
       ).timeout(const Duration(seconds: 8));
 
       // POST location to backend via HTTPS
@@ -135,6 +135,7 @@ void backgroundServiceOnStart(ServiceInstance service) async {
           'email': email,
           'latitude': pos.latitude,
           'longitude': pos.longitude,
+          'accuracy': pos.accuracy,
         }),
       ).timeout(const Duration(seconds: 8));
 
@@ -176,7 +177,7 @@ void _startForegroundLocationTimer(String email) {
       }
 
       final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
+        desiredAccuracy: LocationAccuracy.best,
       ).timeout(const Duration(seconds: 8));
 
       await http.post(
@@ -186,6 +187,7 @@ void _startForegroundLocationTimer(String email) {
           'email': email,
           'latitude': pos.latitude,
           'longitude': pos.longitude,
+          'accuracy': pos.accuracy,
         }),
       ).timeout(const Duration(seconds: 8));
 

@@ -47,6 +47,8 @@ class _LogsMembersPageState extends State<LogsMembersPage>
   Position? _currentPosition;
   final MapController _mapController = MapController();
   StreamSubscription<Position>? _positionStreamSubscription;
+  DateTime? _lastPostTime;
+  Position? _lastPos;
 
   List<latlong.LatLng> _geofencePoints = [];
 
@@ -125,10 +127,11 @@ class _LogsMembersPageState extends State<LogsMembersPage>
         permission = await Geolocator.requestPermission();
       }
       if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
-        final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.high);
+        final pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.best);
         if (mounted) {
           setState(() {
             _currentPosition = pos;
+            _lastPos = pos;
           });
           try {
             _mapController.move(latlong.LatLng(pos.latitude, pos.longitude), 18.2);
@@ -136,14 +139,19 @@ class _LogsMembersPageState extends State<LogsMembersPage>
         }
         _positionStreamSubscription = Geolocator.getPositionStream(
           locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
-            distanceFilter: 2,
+            accuracy: LocationAccuracy.best,
+            distanceFilter: 1, // trigger on 1 meter movement for precision
           ),
         ).listen((Position pos) {
           if (mounted) {
             setState(() {
               _currentPosition = pos;
+              _lastPos = pos;
             });
+            // If session is active, immediately post high accuracy coordinate update
+            if (_isWorking) {
+              _postStreamLocation(pos);
+            }
             try {
               _mapController.move(latlong.LatLng(pos.latitude, pos.longitude), _mapController.camera.zoom);
             } catch (_) {}
@@ -152,6 +160,106 @@ class _LogsMembersPageState extends State<LogsMembersPage>
       }
     } catch (e) {
       debugPrint('Error starting map location tracking: $e');
+    }
+  }
+
+  Future<void> _postStreamLocation(Position pos) async {
+    final email = widget.userData?.email ?? '';
+    if (email.isEmpty) return;
+
+    final now = DateTime.now();
+    // Rate limit stream posts to once every 4 seconds to prevent server overload
+    if (_lastPostTime != null && now.difference(_lastPostTime!) < const Duration(seconds: 4)) {
+      return;
+    }
+    _lastPostTime = now;
+
+    try {
+      final res = await http.post(
+        Uri.parse('$apiBaseUrl/api/logs/location'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email': email,
+          'latitude': pos.latitude,
+          'longitude': pos.longitude,
+          'accuracy': pos.accuracy,
+        }),
+      ).timeout(const Duration(seconds: 5));
+
+      if (res.statusCode == 200 && mounted) {
+        final data = jsonDecode(res.body);
+        _handleLocationResponse(data, email);
+      }
+    } catch (e) {
+      debugPrint('Stream post location error: $e');
+    }
+  }
+
+  void _handleLocationResponse(Map<String, dynamic> data, String email) {
+    if (data['session_stopped'] == true) {
+      setState(() {
+        _isWorking = false;
+        _startTime = null;
+      });
+      _locationTimer?.cancel();
+      _showSnack('Your work session has been ended by Admin.', type: ToastType.warning);
+      return;
+    }
+
+    if (data['status_changed'] == true) {
+      final isPaused = data['is_paused'] == true;
+      final locLog = data['location_log'] as String? ?? '';
+      DateTime? st;
+      if (data['start_time'] != null) {
+        st = DateTime.tryParse(data['start_time'] as String)?.toLocal();
+      }
+      DateTime? lastPausedAt;
+      if (data['last_paused_at'] != null) {
+        lastPausedAt = DateTime.tryParse(data['last_paused_at'] as String)?.toLocal();
+      }
+      setState(() {
+        _isPaused = isPaused;
+        _locationLog = locLog;
+        if (st != null) {
+          _startTime = st;
+          SharedPreferences.getInstance().then((prefs) {
+            prefs.setString('log_start_time_$email', st!.toIso8601String());
+          });
+          if (isPaused && lastPausedAt != null) {
+            _elapsed = lastPausedAt.difference(st);
+          } else {
+            _elapsed = DateTime.now().difference(st);
+          }
+        }
+      });
+      if (isPaused) {
+        _showSnack('Work Session Paused: You went outside the coordinates.');
+      } else {
+        _showSnack('Work Session Resumed: You returned inside the coordinates.');
+      }
+    } else if (data.containsKey('is_paused')) {
+      final serverIsPaused = data['is_paused'] == true;
+      if (serverIsPaused != _isPaused) {
+        DateTime? st;
+        if (data['start_time'] != null) {
+          st = DateTime.tryParse(data['start_time'] as String)?.toLocal();
+        }
+        DateTime? lastPausedAt;
+        if (data['last_paused_at'] != null) {
+          lastPausedAt = DateTime.tryParse(data['last_paused_at'] as String)?.toLocal();
+        }
+        setState(() {
+          _isPaused = serverIsPaused;
+          if (st != null) {
+            _startTime = st;
+            if (serverIsPaused && lastPausedAt != null) {
+              _elapsed = lastPausedAt.difference(st);
+            } else {
+              _elapsed = DateTime.now().difference(st);
+            }
+          }
+        });
+      }
     }
   }
 
@@ -297,7 +405,8 @@ class _LogsMembersPageState extends State<LogsMembersPage>
       }
     });
 
-    _locationTimer = Timer.periodic(const Duration(seconds: 3), (timer) async {
+    // 10-second timer serves as a stationary fallback heartbeat
+    _locationTimer = Timer.periodic(const Duration(seconds: 10), (timer) async {
       if (!_isWorking) {
         timer.cancel();
         return;
@@ -308,11 +417,20 @@ class _LogsMembersPageState extends State<LogsMembersPage>
           permission = await Geolocator.requestPermission();
         }
         if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
-          Position pos = await Geolocator.getCurrentPosition(
-            desiredAccuracy: LocationAccuracy.high
-          );
-          debugPrint('Location update: lat=${pos.latitude}, lng=${pos.longitude}');
-          // Send via HTTP — reliable regardless of socket state
+          // Attempt best accuracy check (use cached fallback to prevent lock contention)
+          Position? pos;
+          try {
+            pos = await Geolocator.getCurrentPosition(
+              desiredAccuracy: LocationAccuracy.best,
+              timeLimit: const Duration(seconds: 4),
+            );
+          } catch (_) {
+            pos = _lastPos ?? await Geolocator.getLastKnownPosition();
+          }
+
+          if (pos == null) return;
+          debugPrint('Timer Location update: lat=${pos.latitude}, lng=${pos.longitude}');
+          
           try {
             final res = await http.post(
               Uri.parse('$apiBaseUrl/api/logs/location'),
@@ -321,78 +439,13 @@ class _LogsMembersPageState extends State<LogsMembersPage>
                 'email': email,
                 'latitude': pos.latitude,
                 'longitude': pos.longitude,
+                'accuracy': pos.accuracy,
               }),
             ).timeout(const Duration(seconds: 5));
+
             if (res.statusCode == 200 && mounted) {
               final data = jsonDecode(res.body);
-              if (data['session_stopped'] == true) {
-                setState(() {
-                  _isWorking = false;
-                  _startTime = null;
-                });
-                _locationTimer?.cancel();
-                _showSnack('Your work session has been ended by Admin.', type: ToastType.warning);
-                return;
-              }
-              if (data['status_changed'] == true) {
-                // A real state change happened on the backend — update & show snackbar
-                final isPaused = data['is_paused'] == true;
-                final locLog = data['location_log'] as String? ?? '';
-                DateTime? st;
-                if (data['start_time'] != null) {
-                  st = DateTime.tryParse(data['start_time'] as String)?.toLocal();
-                }
-                DateTime? lastPausedAt;
-                if (data['last_paused_at'] != null) {
-                  lastPausedAt = DateTime.tryParse(data['last_paused_at'] as String)?.toLocal();
-                }
-                setState(() {
-                  _isPaused = isPaused;
-                  _locationLog = locLog;
-                  if (st != null) {
-                    _startTime = st;
-                    SharedPreferences.getInstance().then((prefs) {
-                      prefs.setString('log_start_time_$email', st!.toIso8601String());
-                    });
-                    if (isPaused && lastPausedAt != null) {
-                      _elapsed = lastPausedAt.difference(st);
-                    } else {
-                      _elapsed = DateTime.now().difference(st);
-                    }
-                  }
-                });
-                if (isPaused) {
-                  _showSnack('Work Session Paused: You went outside the coordinates.');
-                } else {
-                  _showSnack('Work Session Resumed: You returned inside the coordinates.');
-                }
-              } else if (data.containsKey('is_paused')) {
-                // No state change, but silently sync if our local state is stale
-                // (e.g. after server restart the outsideCountMap resets but DB still has
-                //  the session as paused — without this sync the UI stays un-paused forever)
-                final serverIsPaused = data['is_paused'] == true;
-                if (serverIsPaused != _isPaused) {
-                  DateTime? st;
-                  if (data['start_time'] != null) {
-                    st = DateTime.tryParse(data['start_time'] as String)?.toLocal();
-                  }
-                  DateTime? lastPausedAt;
-                  if (data['last_paused_at'] != null) {
-                    lastPausedAt = DateTime.tryParse(data['last_paused_at'] as String)?.toLocal();
-                  }
-                  setState(() {
-                    _isPaused = serverIsPaused;
-                    if (st != null) {
-                      _startTime = st;
-                      if (serverIsPaused && lastPausedAt != null) {
-                        _elapsed = lastPausedAt.difference(st);
-                      } else {
-                        _elapsed = DateTime.now().difference(st);
-                      }
-                    }
-                  });
-                }
-              }
+              _handleLocationResponse(data, email);
             }
           } catch (httpErr) {
             debugPrint('HTTP location_update error: $httpErr');
@@ -778,6 +831,18 @@ class _LogsMembersPageState extends State<LogsMembersPage>
     } catch (_) {}
   }
 
+  String _getCurrentWeekDateRange() {
+    final now = DateTime.now();
+    final int daysSinceSunday = now.weekday == 7 ? 0 : now.weekday;
+    final DateTime sunday = now.subtract(Duration(days: daysSinceSunday));
+    final DateTime saturday = sunday.add(const Duration(days: 6));
+    final sDay = sunday.day.toString().padLeft(2, '0');
+    final sMonth = sunday.month.toString().padLeft(2, '0');
+    final eDay = saturday.day.toString().padLeft(2, '0');
+    final eMonth = saturday.month.toString().padLeft(2, '0');
+    return '(Sun $sDay/$sMonth to Sat $eDay/$eMonth)';
+  }
+
   String _formatDuration(Duration d) {
     final h = d.inHours.toString().padLeft(2, '0');
     final m = (d.inMinutes % 60).toString().padLeft(2, '0');
@@ -1159,7 +1224,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
                     const SizedBox(height: 24),
 
                     // ── Weekly Stats ──
-                    Text('This Week', style: poppins(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+                    Text('This Week ${_getCurrentWeekDateRange()}', style: poppins(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white)),
                     const SizedBox(height: 12),
                     Container(
                       decoration: BoxDecoration(
