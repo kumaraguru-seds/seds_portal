@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:intl/intl.dart';
 import 'app_toast.dart';
 import 'main.dart';
 
@@ -29,7 +30,7 @@ class _AnalyseUsersPageState extends State<AnalyseUsersPage> with SingleTickerPr
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 6, vsync: this);
+    _tabController = TabController(length: 7, vsync: this);
     _searchController.addListener(_onSearchChanged);
     
     // Auto-load details if initial email is provided
@@ -483,6 +484,7 @@ class _AnalyseUsersPageState extends State<AnalyseUsersPage> with SingleTickerPr
             Tab(text: 'Attendance'),
             Tab(text: 'Documents'),
             Tab(text: 'Notifications'),
+            Tab(text: 'Export History'),
             Tab(text: 'Raw DB Dump'),
           ],
         ),
@@ -497,6 +499,7 @@ class _AnalyseUsersPageState extends State<AnalyseUsersPage> with SingleTickerPr
               _buildAttendanceTab(),
               _buildDocumentsTab(),
               _buildNotificationsTab(),
+              _buildExportHistoryTab(),
               _buildRawDumpTab(),
             ],
           ),
@@ -1035,6 +1038,79 @@ class _AnalyseUsersPageState extends State<AnalyseUsersPage> with SingleTickerPr
           ],
         ),
       ),
+    );
+  }
+
+  // TAB 7: Export History
+  Widget _buildExportHistoryTab() {
+    final poppins = GoogleFonts.poppins;
+    final List<dynamic> exports = _selectedUserData?['exports'] ?? [];
+
+    if (exports.isEmpty) {
+      return Center(
+        child: Text(
+          'No exports recorded for this user.',
+          style: poppins(color: Colors.white54, fontSize: 14),
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: exports.length,
+      itemBuilder: (context, index) {
+        final item = exports[index];
+        final String topic = item['topic'] ?? 'Unknown';
+        final String scope = item['scope'] ?? 'All';
+        final String fileExt = item['file_extension'] ?? '';
+        final String exportedAtStr = item['exported_at'] ?? '';
+        
+        DateTime? date;
+        if (exportedAtStr.isNotEmpty) {
+          date = DateTime.tryParse(exportedAtStr)?.toLocal();
+        }
+        
+        final String dateStr = date != null ? DateFormat('dd/MM/yyyy').format(date) : '';
+        final String timeStr = date != null ? DateFormat('HH:mm:ss').format(date) : '';
+
+        IconData extIcon = Icons.insert_drive_file_outlined;
+        Color extColor = Colors.grey;
+        if (fileExt.toLowerCase() == 'pdf') {
+          extIcon = Icons.picture_as_pdf_outlined;
+          extColor = const Color(0xFFFF6B6B);
+        } else if (fileExt.toLowerCase() == 'xlsx' || fileExt.toLowerCase() == 'excel') {
+          extIcon = Icons.table_chart_outlined;
+          extColor = const Color(0xFF00C48C);
+        } else if (fileExt.toLowerCase() == 'csv') {
+          extIcon = Icons.description_outlined;
+          extColor = const Color(0xFFFFD93D);
+        }
+
+        return Card(
+          color: const Color(0xFF1E2E4A),
+          margin: const EdgeInsets.only(bottom: 12),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          child: ListTile(
+            leading: CircleAvatar(
+              backgroundColor: extColor.withValues(alpha: 0.15),
+              child: Icon(extIcon, color: extColor),
+            ),
+            title: Text(
+              '$topic Export ($fileExt)',
+              style: poppins(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+            ),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox(height: 4),
+                Text('Scope: $scope', style: poppins(color: Colors.white70, fontSize: 12)),
+                const SizedBox(height: 2),
+                Text('Date: $dateStr  Time: $timeStr', style: poppins(color: Colors.white38, fontSize: 11)),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }

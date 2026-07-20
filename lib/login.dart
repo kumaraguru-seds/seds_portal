@@ -11,6 +11,8 @@ import 'notification_service.dart';
 import 'app_toast.dart';
 import 'reset_password.dart';
 import 'user_profile_details_form_page.dart';
+import 'network_utils.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -133,17 +135,27 @@ class _LoginPageState extends State<LoginPage>
     setState(() => _errorMessage = null);
     if (!_formKey.currentState!.validate()) return;
 
+    final hasConnection = await NetworkUtils.checkConnection(context);
+    if (!hasConnection) return;
+
     setState(() => _isLoading = true);
 
     final String email = _identifierController.text.trim();
     final String password = _passwordController.text.trim();
 
     try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      final appVersion = packageInfo.version;
+
       // Connect to the remote AWS PostgreSQL backend
       final response = await http.post(
         Uri.parse('$apiBaseUrl/api/login'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'email': email, 'password': password}),
+        body: jsonEncode({
+          'email': email,
+          'password': password,
+          'appVersion': appVersion,
+        }),
       ).timeout(const Duration(seconds: 30));
 
       if (!mounted) return;
@@ -202,10 +214,16 @@ class _LoginPageState extends State<LoginPage>
 
       if (authenticated) {
         if (!mounted) return;
+        final hasConnection = await NetworkUtils.checkConnection(context);
+        if (!hasConnection) return;
+
         setState(() {
           _isLoading = true;
           _errorMessage = null;
         });
+
+        final packageInfo = await PackageInfo.fromPlatform();
+        final appVersion = packageInfo.version;
 
         final res = await http.post(
           Uri.parse('$apiBaseUrl/api/biometric/login'),
@@ -213,6 +231,7 @@ class _LoginPageState extends State<LoginPage>
           body: jsonEncode({
             'email': savedEmail,
             'biometricToken': savedToken,
+            'appVersion': appVersion,
           }),
         ).timeout(const Duration(seconds: 20));
 

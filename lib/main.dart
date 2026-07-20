@@ -34,9 +34,12 @@ import 'user_profile_details_form_page.dart';
 import 'apply_leave_page.dart';
 import 'update_checker.dart';
 import 'developer_support_page.dart';
+import 'export_data_page.dart';
+import 'database_viewer_page.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'network_utils.dart';
 
 class Platform {
   static bool get isWindows => kIsWeb || (!kIsWeb && dart_io.Platform.isWindows);
@@ -314,7 +317,9 @@ class SEDSApp extends StatelessWidget {
             }
             return MediaQuery(
               data: newData,
-              child: AccessibilityWrapper(settings: settings, child: child!),
+              child: NetworkAwareWidget(
+                child: AccessibilityWrapper(settings: settings, child: child!),
+              ),
             );
           },
           home: initialUserData != null
@@ -3151,6 +3156,44 @@ class _ProfileTabState extends State<ProfileTab> {
                 const SizedBox(height: 10),
               ],
 
+              // Export Data (All Roles)
+              _buildProfileNavButton(
+                icon: Icons.file_download_outlined,
+                label: 'Export Data',
+                subtitle: 'Export logs and attendance to CSV, Excel, or PDF',
+                color: const Color(0xFFFF9F43),
+                onTap: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => DesktopPageWrapper(
+                      child: ExportDataPage(userData: widget.userData!),
+                    ),
+                  ),
+                ),
+                poppins: poppins,
+              ),
+              const SizedBox(height: 10),
+
+              // Database Viewer (Admin only)
+              if (role == 'Admin') ...[
+                _buildProfileNavButton(
+                  icon: Icons.storage_rounded,
+                  label: 'Database Viewer',
+                  subtitle: 'View, search and zoom SEDS AWS database details',
+                  color: const Color(0xFF4DA6FF),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => DesktopPageWrapper(
+                        child: DatabaseViewerPage(userData: widget.userData!),
+                      ),
+                    ),
+                  ),
+                  poppins: poppins,
+                ),
+                const SizedBox(height: 10),
+              ],
+
               // Developer & Support (All Roles)
               _buildProfileNavButton(
                 icon: Icons.contact_support_outlined,
@@ -3520,6 +3563,7 @@ class _AdminCustomNotificationPageState
         centerTitle: true,
       ),
       body: Stack(
+        fit: StackFit.expand,
         children: [
           // Background assets
           Positioned(
@@ -3559,10 +3603,11 @@ class _AdminCustomNotificationPageState
                     width: double.infinity,
                     padding: const EdgeInsets.all(20),
                     decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.05),
+                      color: const Color(0xFF4DA6FF).withValues(alpha: 0.08),
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.08),
+                        color: Colors.white.withValues(alpha: 0.18),
+                        width: 1.2,
                       ),
                     ),
                     child: Column(
@@ -3704,10 +3749,11 @@ class _AdminCustomNotificationPageState
                       width: double.infinity,
                       padding: const EdgeInsets.all(20),
                       decoration: BoxDecoration(
-                        color: Colors.white.withValues(alpha: 0.05),
+                        color: const Color(0xFF4DA6FF).withValues(alpha: 0.08),
                         borderRadius: BorderRadius.circular(20),
                         border: Border.all(
-                          color: Colors.white.withValues(alpha: 0.08),
+                          color: Colors.white.withValues(alpha: 0.18),
+                          width: 1.2,
                         ),
                       ),
                       child: Column(
@@ -4019,10 +4065,11 @@ class _AdminCustomNotificationPageState
                     width: double.infinity,
                     padding: const EdgeInsets.all(20),
                     decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.05),
+                      color: const Color(0xFF4DA6FF).withValues(alpha: 0.08),
                       borderRadius: BorderRadius.circular(20),
                       border: Border.all(
-                        color: Colors.white.withValues(alpha: 0.08),
+                        color: Colors.white.withValues(alpha: 0.18),
+                        width: 1.2,
                       ),
                     ),
                     child: Column(
