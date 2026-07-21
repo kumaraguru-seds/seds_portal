@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -28,6 +29,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
   bool _isWorking = false;
   DateTime? _startTime;
   int _sessionId = -1;
+  String? _logSessionId;
   Duration _elapsed = Duration.zero;
   Timer? _ticker;
   bool _isPaused = false;
@@ -478,12 +480,14 @@ class _LogsMembersPageState extends State<LogsMembersPage>
     // Show local cached state first if exists to there is zero UI delay
     final startStr = prefs.getString('log_start_time_$email');
     final sid = prefs.getInt('log_session_id_$email') ?? -1;
+    final uuid = prefs.getString('log_session_uuid_$email');
     if (startStr != null) {
       final st = DateTime.tryParse(startStr);
       if (st != null) {
         setState(() {
           _startTime = st;
           _sessionId = sid;
+          _logSessionId = uuid;
           _isWorking = true;
           _elapsed = DateTime.now().difference(st);
         });
@@ -503,6 +507,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
           final session = data['session'];
           final st = DateTime.parse(session['start_time']).toLocal();
           final id = session['id'] as int;
+          final logSessionId = session['log_session_id'] as String?;
           final bool isPaused = session['is_paused'] == true;
           final String locLog = session['location_log'] as String? ?? '';
           
@@ -513,6 +518,9 @@ class _LogsMembersPageState extends State<LogsMembersPage>
 
           await prefs.setString('log_start_time_$email', st.toIso8601String());
           await prefs.setInt('log_session_id_$email', id);
+          if (logSessionId != null) {
+            await prefs.setString('log_session_uuid_$email', logSessionId);
+          }
 
           Duration elapsed;
           if (isPaused && lastPausedAt != null) {
@@ -524,6 +532,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
           setState(() {
             _startTime = st;
             _sessionId = id;
+            _logSessionId = logSessionId;
             _isWorking = true;
             _isPaused = isPaused;
             _locationLog = locLog;
@@ -536,11 +545,13 @@ class _LogsMembersPageState extends State<LogsMembersPage>
           // Sync with server by clearing local active session.
           await prefs.remove('log_start_time_$email');
           await prefs.remove('log_session_id_$email');
+          await prefs.remove('log_session_uuid_$email');
           setState(() {
             _isWorking = false;
             _startTime = null;
             _elapsed = Duration.zero;
             _sessionId = -1;
+            _logSessionId = null;
             _isPaused = false;
             _locationLog = '';
           });
@@ -575,6 +586,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
         return;
       }
 
+      final newUuid = _generateUuid();
       final res = await http.post(
         Uri.parse('$apiBaseUrl/api/logs/start'),
         headers: {'Content-Type': 'application/json'},
@@ -585,6 +597,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
           'role': u.role,
           'team': u.team ?? '',
           'session_id': currentSessionId,
+          'log_session_id': newUuid,
         }),
       );
       if (res.statusCode == 200) {
@@ -596,9 +609,11 @@ class _LogsMembersPageState extends State<LogsMembersPage>
           final prefs = await SharedPreferences.getInstance();
           await prefs.setString('log_start_time_$email', st.toIso8601String());
           await prefs.setInt('log_session_id_$email', id);
+          await prefs.setString('log_session_uuid_$email', newUuid);
           setState(() {
             _startTime = st;
             _sessionId = id;
+            _logSessionId = newUuid;
             _isWorking = true;
             _isPaused = false;
             _elapsed = Duration.zero;
@@ -634,12 +649,14 @@ class _LogsMembersPageState extends State<LogsMembersPage>
           'user_email': u.email,
           'summary': summary,
           'session_id': _sessionId > 0 ? _sessionId : null,
+          'log_session_id': _logSessionId,
         }),
       );
       final email = u.email;
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('log_start_time_$email');
       await prefs.remove('log_session_id_$email');
+      await prefs.remove('log_session_uuid_$email');
       // ── Stop background location tracking
       await stopBackgroundTracking();
       setState(() {
@@ -647,6 +664,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
         _startTime = null;
         _elapsed = Duration.zero;
         _sessionId = -1;
+        _logSessionId = null;
         _isPaused = false;
         _locationLog = '';
       });
@@ -844,10 +862,10 @@ class _LogsMembersPageState extends State<LogsMembersPage>
   }
 
   String _formatDuration(Duration d) {
-    final h = d.inHours.toString().padLeft(2, '0');
-    final m = (d.inMinutes % 60).toString().padLeft(2, '0');
-    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
-    return '$h:$m:$s';
+    final h = d.inHours;
+    final m = d.inMinutes % 60;
+    final s = d.inSeconds % 60;
+    return '${h}h ${m}m ${s}s';
   }
 
   String _formatDurationShort(int? seconds) {
@@ -856,6 +874,34 @@ class _LogsMembersPageState extends State<LogsMembersPage>
     final m = (seconds % 3600) ~/ 60;
     final s = seconds % 60;
     return '${h}h ${m}m ${s}s';
+  }
+
+  String _formatWeeklyProgress(int totalSeconds) {
+    final int hours = totalSeconds ~/ 3600;
+    final int minutes = (totalSeconds % 3600) ~/ 60;
+    if (hours == 0 && minutes == 0) {
+      return '0h 0m';
+    } else if (hours == 0) {
+      return '${minutes}m';
+    } else if (minutes == 0) {
+      return '${hours}h';
+    }
+    return '${hours}h ${minutes}m';
+  }
+
+  String _generateUuid() {
+    final random = Random.secure();
+    final values = List<int>.generate(16, (i) => random.nextInt(256));
+    values[6] = (values[6] & 0x0f) | 0x40;
+    values[8] = (values[8] & 0x3f) | 0x80;
+    final buffer = StringBuffer();
+    for (var i = 0; i < 16; i++) {
+      if (i == 4 || i == 6 || i == 8 || i == 10) {
+        buffer.write('-');
+      }
+      buffer.write(values[i].toRadixString(16).padLeft(2, '0'));
+    }
+    return buffer.toString();
   }
 
   String _formatDateTime(String? isoStr) {
@@ -1243,7 +1289,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    '${weekHours.toStringAsFixed(1)}h',
+                                    _formatWeeklyProgress(totalWeekSecs),
                                     style: poppins(fontSize: 32, fontWeight: FontWeight.bold, color: progressColor),
                                   ),
                                   Text('of 12h weekly target', style: poppins(fontSize: 12, color: const Color(0xFF8A9CC2))),
@@ -1282,7 +1328,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
                               Text('0h', style: poppins(fontSize: 11, color: const Color(0xFF8A9CC2))),
                               if (weekProgress < 1)
                                 Text(
-                                  '${((_weeklyTargetSeconds - totalWeekSecs) / 3600).toStringAsFixed(1)}h remaining',
+                                  '${_formatWeeklyProgress(_weeklyTargetSeconds - totalWeekSecs)} remaining',
                                   style: poppins(fontSize: 11, color: const Color(0xFF8A9CC2)),
                                 )
                               else
