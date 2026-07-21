@@ -19,6 +19,8 @@ class _AttendanceTabState extends State<AttendanceTab> {
   List<dynamic> _members = [];
   String? _errorMessage;
   String _selectedTeam = '';
+  Map<String, dynamic> _personalAttendance = {};
+  bool _loadingPersonalAttendance = false;
 
   // Selected date / meeting display option
   String _selectedDate = '';
@@ -81,6 +83,36 @@ class _AttendanceTabState extends State<AttendanceTab> {
     await _fetchTeamMembers();
     await _fetchTeamLeaves();
     await _fetchMeetings();
+    await _fetchPersonalAttendance();
+  }
+
+  Future<void> _fetchPersonalAttendance() async {
+    final role = widget.userData?.role;
+    final bool isAdmin = role == 'Admin' || role == 'SuperAdmin';
+    if (isAdmin) return; // Admins don't have personal team attendance to track
+
+    final roll = widget.userData?.rollNumber;
+    final team = widget.userData?.team;
+    if (roll == null || team == null || roll.isEmpty || team.isEmpty) return;
+
+    if (mounted) setState(() => _loadingPersonalAttendance = true);
+    try {
+      final response = await http.get(
+        Uri.parse('$apiBaseUrl/api/attendance/member?roll_number=${Uri.encodeComponent(roll)}&team=${Uri.encodeComponent(team)}'),
+      ).timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 200) {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        if (mounted) {
+          setState(() {
+            _personalAttendance = data;
+            _loadingPersonalAttendance = false;
+          });
+        }
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingPersonalAttendance = false);
+    }
   }
 
   Future<void> _fetchTeamLeaves() async {
@@ -176,7 +208,7 @@ class _AttendanceTabState extends State<AttendanceTab> {
 
     try {
       final response = await http.get(
-        Uri.parse('$apiBaseUrl/api/members?team=${Uri.encodeComponent(team)}'),
+        Uri.parse('$apiBaseUrl/api/members?team=${Uri.encodeComponent(team)}&include_leads=true'),
       ).timeout(const Duration(seconds: 15));
 
       if (response.statusCode == 200) {
@@ -500,6 +532,11 @@ class _AttendanceTabState extends State<AttendanceTab> {
                 _buildHeaderCard(poppins, isLead, teamName),
                 const SizedBox(height: 16),
 
+                if (_personalAttendance.isNotEmpty) ...[
+                  _buildPersonalAttendanceCard(poppins),
+                  const SizedBox(height: 16),
+                ],
+
                 // ── Main Body Content ──
                 _buildMainBody(poppins, isLead),
               ],
@@ -507,6 +544,90 @@ class _AttendanceTabState extends State<AttendanceTab> {
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildPersonalAttendanceCard(TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins) {
+    if (_loadingPersonalAttendance && _personalAttendance.isEmpty) {
+      return Container(
+        height: 80,
+        alignment: Alignment.center,
+        child: const CircularProgressIndicator(color: Color(0xFF4DA6FF)),
+      );
+    }
+
+    final overall = _personalAttendance['overall'] ?? _personalAttendance;
+    final double percentage = (overall['percentage'] as num?)?.toDouble() ?? 100.0;
+    final int present = (overall['present_count'] as num?)?.toInt() ?? 0;
+    final int total = (overall['total_meetings'] as num?)?.toInt() ?? 0;
+    final int absent = (overall['absent_count'] as num?)?.toInt() ?? 0;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF4DA6FF).withValues(alpha: 0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'My Personal Attendance',
+                style: poppins(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white70),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                decoration: BoxDecoration(
+                  color: (percentage >= 75 ? Colors.greenAccent : Colors.redAccent).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  '${percentage.toStringAsFixed(1)}%',
+                  style: poppins(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: percentage >= 75 ? Colors.greenAccent : Colors.redAccent,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _buildStatsTile(poppins, 'Present', '$present', Colors.greenAccent),
+              _buildStatsTile(poppins, 'Absent', '$absent', Colors.redAccent),
+              _buildStatsTile(poppins, 'Total Meetings', '$total', const Color(0xFF4DA6FF)),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildStatsTile(
+    TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins,
+    String label,
+    String value,
+    Color color,
+  ) {
+    return Column(
+      children: [
+        Text(
+          value,
+          style: poppins(fontSize: 18, fontWeight: FontWeight.bold, color: color),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          label,
+          style: poppins(fontSize: 11, color: Colors.white38),
+        ),
+      ],
     );
   }
 
@@ -821,20 +942,62 @@ class _AttendanceTabState extends State<AttendanceTab> {
             if (textScale < 1.0) textScale = 1.0;
             final double adjustedRatio = (0.86 / textScale).clamp(0.6, 0.86);
 
-            return GridView.builder(
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 2,
-                crossAxisSpacing: 12,
-                mainAxisSpacing: 12,
-                childAspectRatio: adjustedRatio,
-              ),
-              itemCount: _members.length,
-              itemBuilder: (context, index) {
-                final member = _members[index];
-                return _buildMemberCard(poppins, member);
-              },
+            final leads = _members.where((m) => (m['role'] ?? '').toString().toLowerCase() == 'lead').toList();
+            final members = _members.where((m) => (m['role'] ?? '').toString().toLowerCase() != 'lead').toList();
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (leads.isNotEmpty) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12.0, top: 4.0),
+                    child: Text(
+                      'Team Leads',
+                      style: poppins(fontSize: 15, fontWeight: FontWeight.bold, color: const Color(0xFF4DA6FF)),
+                    ),
+                  ),
+                  GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      childAspectRatio: adjustedRatio,
+                    ),
+                    itemCount: leads.length,
+                    itemBuilder: (context, index) {
+                      final member = leads[index];
+                      return _buildMemberCard(poppins, member);
+                    },
+                  ),
+                  const SizedBox(height: 24),
+                ],
+                if (members.isNotEmpty) ...[
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12.0, top: 4.0),
+                    child: Text(
+                      'Team Members',
+                      style: poppins(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white70),
+                    ),
+                  ),
+                  GridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 2,
+                      crossAxisSpacing: 12,
+                      mainAxisSpacing: 12,
+                      childAspectRatio: adjustedRatio,
+                    ),
+                    itemCount: members.length,
+                    itemBuilder: (context, index) {
+                      final member = members[index];
+                      return _buildMemberCard(poppins, member);
+                    },
+                  ),
+                ],
+              ],
             );
           }),
           const SizedBox(height: 16),
@@ -1177,21 +1340,130 @@ class _AttendanceTabState extends State<AttendanceTab> {
               ),
             ],
           ),
-          ElevatedButton(
-            onPressed: () => _showNewMeetingDialog(context),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF4DA6FF),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-            ),
-            child: Text(
-              'Schedule\nMeeting',
-              textAlign: TextAlign.center,
-              style: poppins(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.black),
-            ),
+          Row(
+            children: [
+              OutlinedButton(
+                onPressed: () => _quickScheduleMeeting(context),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFF4DA6FF), width: 1.5),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                ),
+                child: Text(
+                  '⚡ Quick\nSchedule',
+                  textAlign: TextAlign.center,
+                  style: poppins(fontSize: 12, fontWeight: FontWeight.bold, color: const Color(0xFF4DA6FF)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: () => _showNewMeetingDialog(context),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4DA6FF),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                ),
+                child: Text(
+                  'Schedule\nMeeting',
+                  textAlign: TextAlign.center,
+                  style: poppins(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.black),
+                ),
+              ),
+            ],
           ),
         ],
       ),
+    );
+  }
+
+  void _quickScheduleMeeting(BuildContext context) {
+    final now = DateTime.now();
+    final String teamName = _selectedTeam.isNotEmpty ? _selectedTeam : (widget.userData?.team ?? 'Media');
+    final String dateStr = "${now.month.toString().padLeft(2, '0')}/${now.day.toString().padLeft(2, '0')}/${now.year}";
+    final String startStr = "${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}";
+    final end = now.add(const Duration(hours: 1));
+    final String endStr = "${end.hour.toString().padLeft(2, '0')}:${end.minute.toString().padLeft(2, '0')}";
+
+    final leadName = widget.userData?.name ?? 'Lead';
+    final agendaStr = "Quick sync scheduled by $leadName";
+    const venueStr = "SEDS Lab";
+
+    showDialog(
+      context: context,
+      builder: (confirmContext) {
+        final poppins = GoogleFonts.poppins;
+        return AlertDialog(
+          backgroundColor: const Color(0xFF0D1E3A),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: const BorderSide(color: Color(0xFF4DA6FF), width: 1.5),
+          ),
+          title: Text(
+            '⚡ Quick Schedule Meeting',
+            style: poppins(color: const Color(0xFF4DA6FF), fontWeight: FontWeight.bold),
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Team: $teamName', style: poppins(color: Colors.white, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 8),
+              Text('Date: $dateStr', style: poppins(color: Colors.white70)),
+              const SizedBox(height: 4),
+              Text('Time: $startStr to $endStr', style: poppins(color: Colors.white70)),
+              const SizedBox(height: 4),
+              Text('Venue: $venueStr', style: poppins(color: Colors.white70)),
+              const SizedBox(height: 4),
+              Text('Agenda: $agendaStr', style: poppins(color: Colors.white70)),
+              const SizedBox(height: 12),
+              Text(
+                'This will schedule the meeting and send notifications to all team members, admin, and leads.',
+                style: poppins(color: Colors.white38, fontSize: 11),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(confirmContext),
+              child: Text('Cancel', style: poppins(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(confirmContext); // Close confirm
+                // Call backend API
+                try {
+                  final response = await http.post(
+                    Uri.parse('$apiBaseUrl/api/meetings'),
+                    headers: {'Content-Type': 'application/json'},
+                    body: jsonEncode({
+                      'team_name': teamName,
+                      'meeting_mode': 'OFFLINE',
+                      'meeting_date': dateStr,
+                      'start_time': startStr,
+                      'end_time': endStr,
+                      'venue': venueStr,
+                      'agenda': agendaStr,
+                    }),
+                  ).timeout(const Duration(seconds: 15));
+
+                  final data = jsonDecode(response.body);
+                  if (response.statusCode == 200 && data['success'] == true) {
+                    trackUserAction('Scheduled a quick meeting: $agendaStr on $dateStr');
+                    _fetchMeetings();
+                    if (context.mounted) AppToast.success(context, 'Quick meeting scheduled!');
+                  } else {
+                    _showErrorSnackBar(data['message'] ?? 'Failed to schedule meeting.');
+                  }
+                } catch (e) {
+                  _showErrorSnackBar('Network error: Could not schedule meeting.');
+                }
+              },
+              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4DA6FF)),
+              child: Text('Schedule', style: poppins(color: Colors.black, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
     );
   }
 

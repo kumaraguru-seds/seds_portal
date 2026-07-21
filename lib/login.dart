@@ -617,31 +617,6 @@ class _LoginPageState extends State<LoginPage>
                                         ),
                                       ),
                                     ),
-                                    const SizedBox(height: 14),
-
-                                    // ── Continue as Guest Button ──
-                                    SizedBox(
-                                      width: double.infinity,
-                                      child: TextButton(
-                                        onPressed: () {
-                                          Navigator.pushReplacement(
-                                            context,
-                                            MaterialPageRoute(
-                                              builder: (context) => const MainPage(userData: null),
-                                            ),
-                                          );
-                                        },
-                                        child: Text(
-                                          'Continue as Guest',
-                                          style: poppins(
-                                            fontSize: 14,
-                                            color: const Color(0xFF4DA6FF),
-                                            fontWeight: FontWeight.w600,
-                                            decoration: TextDecoration.underline,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
                                   ],
                                 ),
                               ),

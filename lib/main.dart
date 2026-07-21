@@ -1958,11 +1958,35 @@ class _ProfileTabState extends State<ProfileTab> {
   bool _biometricsAvailable = false;
   bool _biometricsEnabled = false;
   bool _isLoadingBiometrics = true;
+  List<dynamic> _deficits = [];
+  bool _loadingDeficits = false;
 
   @override
   void initState() {
     super.initState();
     _checkBiometricStatus();
+    final String role = widget.userData?.role ?? 'Guest';
+    if (role == 'Admin' || role == 'SuperAdmin') {
+      _fetchDeficits();
+    }
+  }
+
+  Future<void> _fetchDeficits() async {
+    if (mounted) setState(() => _loadingDeficits = true);
+    try {
+      final res = await http.get(Uri.parse('$apiBaseUrl/api/logs/deficits')).timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (mounted && data['success'] == true) {
+          setState(() {
+            _deficits = data['deficits'] ?? [];
+            _loadingDeficits = false;
+          });
+        }
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingDeficits = false);
+    }
   }
 
   Future<void> _checkBiometricStatus() async {
@@ -2250,6 +2274,177 @@ class _ProfileTabState extends State<ProfileTab> {
     }
   }
 
+  Widget _buildAdminAlertsCard() {
+    final poppins = GoogleFonts.poppins;
+    if (_loadingDeficits) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16.0),
+          child: CircularProgressIndicator(color: Color(0xFF4DA6FF)),
+        ),
+      );
+    }
+
+    if (_deficits.isEmpty) {
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: const Color(0xFF1E3A8A).withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFF1E3A8A).withValues(alpha: 0.2)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.check_circle_outline_rounded, color: Colors.greenAccent, size: 24),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'All members & leads are up to target! 🎉',
+                style: poppins(color: Colors.white70, fontSize: 13),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: const Color(0xFFFF6B6B).withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: const Color(0xFFFF6B6B).withValues(alpha: 0.2),
+          width: 1.5,
+        ),
+      ),
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          title: Row(
+            children: [
+              Container(
+                width: 32,
+                height: 32,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFF6B6B).withValues(alpha: 0.15),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(
+                  Icons.warning_amber_rounded,
+                  color: Color(0xFFFF6B6B),
+                  size: 18,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                'Actions Needed (${_deficits.length})',
+                style: poppins(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: const Color(0xFFFF6B6B),
+                ),
+              ),
+            ],
+          ),
+          subtitle: Padding(
+            padding: const EdgeInsets.only(left: 44),
+            child: Text(
+              'Target deficits or absents detected',
+              style: poppins(fontSize: 11, color: Colors.white54),
+            ),
+          ),
+          iconColor: const Color(0xFFFF6B6B),
+          collapsedIconColor: const Color(0xFFFF6B6B),
+          childrenPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          children: _deficits.map<Widget>((def) {
+            final double workedHours = (def['weekly_seconds'] ?? 0) / 3600.0;
+            final double targetHours = (def['target_seconds'] ?? 0) / 3600.0;
+            final List<Widget> alerts = [];
+
+            if (def['has_hours_deficit'] == true) {
+              alerts.add(
+                Container(
+                  margin: const EdgeInsets.only(top: 4, right: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFF6B6B).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    'Worked: ${workedHours.toStringAsFixed(1)}h / ${targetHours.toStringAsFixed(0)}h',
+                    style: poppins(fontSize: 11, color: const Color(0xFFFF6B6B), fontWeight: FontWeight.w600),
+                  ),
+                ),
+              );
+            }
+
+            if (def['latest_absent'] != null) {
+              final date = def['latest_absent']['date'] ?? '';
+              alerts.add(
+                Container(
+                  margin: const EdgeInsets.only(top: 4),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFC048).withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    'Absent: $date',
+                    style: poppins(fontSize: 11, color: const Color(0xFFFFC048), fontWeight: FontWeight.w600),
+                  ),
+                ),
+              );
+            }
+
+            final String imgUrl = def['image_url'] ?? '';
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+              ),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 20,
+                    backgroundColor: const Color(0xFF4DA6FF).withValues(alpha: 0.1),
+                    backgroundImage: imgUrl.isNotEmpty ? NetworkImage(imgUrl) : null,
+                    child: imgUrl.isEmpty
+                        ? const Icon(Icons.person_rounded, color: Colors.white70, size: 20)
+                        : null,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          def['name'] ?? 'N/A',
+                          style: poppins(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+                        ),
+                        Text(
+                          '${def['role']} • ${def['team']}',
+                          style: poppins(color: Colors.white54, fontSize: 11),
+                        ),
+                        const SizedBox(height: 4),
+                        Wrap(children: alerts),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final poppins = GoogleFonts.poppins;
@@ -2496,6 +2691,10 @@ class _ProfileTabState extends State<ProfileTab> {
                 ),
               ),
               const SizedBox(height: 24),
+              if (role == 'Admin' || role == 'SuperAdmin') ...[
+                _buildAdminAlertsCard(),
+                const SizedBox(height: 24),
+              ],
 
               // ── Meeting Schedule Navigation Row (All Users) ──
               ...[
