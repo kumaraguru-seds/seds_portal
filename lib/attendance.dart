@@ -540,6 +540,10 @@ class _AttendanceTabState extends State<AttendanceTab> {
                 if (_personalAttendance.isNotEmpty) ...[
                   _buildPersonalAttendanceCard(poppins),
                   const SizedBox(height: 16),
+                  if (isLead) ...[
+                    _buildLeadsTeamAttendanceCard(poppins),
+                    const SizedBox(height: 16),
+                  ],
                 ],
 
                 // ── Main Body Content ──
@@ -612,6 +616,162 @@ class _AttendanceTabState extends State<AttendanceTab> {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _buildLeadsTeamAttendanceCard(TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins) {
+    Map<String, dynamic>? leadsData;
+    if (_personalAttendance['teams'] != null && _personalAttendance['teams'] is Map) {
+      final teamsMap = _personalAttendance['teams'] as Map<String, dynamic>;
+      leadsData = teamsMap['Leads'] ?? teamsMap['leads'];
+    }
+
+    final double pct = (leadsData?['percentage'] as num?)?.toDouble() ?? 0.0;
+    final int present = (leadsData?['present_count'] as num?)?.toInt() ?? 0;
+    final int total = (leadsData?['total_meetings'] as num?)?.toInt() ?? 0;
+    final int absent = (leadsData?['absent_count'] as num?)?.toInt() ?? 0;
+
+    final double fillFactor = total > 0 ? (pct / 100.0).clamp(0.0, 1.0) : 0.0;
+    final double presentRatio = total > 0 ? (present / total).clamp(0.0, 1.0) : 0.0;
+    final double absentRatio = total > 0 ? (absent / total).clamp(0.0, 1.0) : 0.0;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFF4DA6FF).withValues(alpha: 0.15)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Leads Team Attendance',
+                style: poppins(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+              Text(
+                '${pct.toStringAsFixed(1)}%',
+                style: poppins(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: pct >= 75 ? const Color(0xFF00E676) : Colors.orangeAccent,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final trackWidth = constraints.maxWidth;
+              final fillWidth = trackWidth * fillFactor;
+              return Stack(
+                children: [
+                  Container(
+                    height: 14,
+                    width: double.infinity,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(7),
+                    ),
+                  ),
+                  Container(
+                    height: 14,
+                    width: fillWidth > 0 ? fillWidth : 0.1,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF00E676), Color(0xFF00B0FF)],
+                      ),
+                      borderRadius: BorderRadius.circular(7),
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFF00E676).withValues(alpha: 0.25),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text('0%', style: poppins(fontSize: 11, color: Colors.white30)),
+              if (pct < 75 && total > 0)
+                Text('Needs Improvement (Aim for 75%+)',
+                    style: poppins(fontSize: 10, color: Colors.orangeAccent, fontWeight: FontWeight.w500))
+              else
+                Text('Good Standing',
+                    style: poppins(fontSize: 10, color: const Color(0xFF00E676), fontWeight: FontWeight.w500)),
+              Text('100%', style: poppins(fontSize: 11, color: Colors.white30)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Divider(color: Colors.white.withValues(alpha: 0.07)),
+          const SizedBox(height: 10),
+          _buildLeadsMiniBar(
+            poppins,
+            label: 'Attended',
+            count: present,
+            total: total,
+            ratio: presentRatio,
+            color: const Color(0xFF00E676),
+          ),
+          const SizedBox(height: 8),
+          _buildLeadsMiniBar(
+            poppins,
+            label: 'Absent',
+            count: absent,
+            total: total,
+            ratio: absentRatio,
+            color: Colors.redAccent,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLeadsMiniBar(
+    TextStyle Function({double? fontSize, FontWeight? fontWeight, Color? color}) poppins, {
+    required String label,
+    required int count,
+    required int total,
+    required double ratio,
+    required Color color,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              label,
+              style: poppins(fontSize: 11, color: Colors.white70, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              '$count / $total',
+              style: poppins(fontSize: 11, color: color, fontWeight: FontWeight.w900),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: ratio.clamp(0.0, 1.0),
+            minHeight: 8,
+            backgroundColor: Colors.white.withValues(alpha: 0.07),
+            valueColor: AlwaysStoppedAnimation<Color>(color),
+          ),
+        ),
+      ],
     );
   }
 

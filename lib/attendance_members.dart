@@ -172,6 +172,7 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
                     const SizedBox(height: 16),
                     ...(_attendanceData['teams'] as Map<String, dynamic>)
                         .entries
+                        .where((entry) => entry.key.toLowerCase().trim() != 'leads')
                         .map((entry) {
                       return Padding(
                         padding: const EdgeInsets.only(bottom: 16.0),
@@ -521,7 +522,9 @@ class _AttendanceMembersTabState extends State<AttendanceMembersTab> {
             style: poppins(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white70),
           ),
           const SizedBox(height: 14),
-          ...teamsData.entries.map((entry) {
+          ...teamsData.entries
+              .where((entry) => entry.key.toLowerCase().trim() != 'leads')
+              .map((entry) {
             final tName = entry.key;
             final tData = entry.value;
             final int present = (tData['present_count'] as num?)?.toInt() ?? 0;
