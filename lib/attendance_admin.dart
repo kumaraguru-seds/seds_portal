@@ -20,6 +20,8 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
   List<dynamic> _allRecords = [];
   List<dynamic> _filteredRecords = [];
   bool _showMarkAttendance = false;
+  String _attendanceCategory = 'member'; // 'member' or 'lead'
+  bool _sortAscending = false;
 
   // Search & Filter state
   final TextEditingController _searchController = TextEditingController();
@@ -111,6 +113,13 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
 
         return matchesSearch && matchesTeam && matchesRole;
       }).toList();
+
+      // Sort by attendance percentage
+      _filteredRecords.sort((a, b) {
+        final double pctA = (a['percentage'] as num?)?.toDouble() ?? 0.0;
+        final double pctB = (b['percentage'] as num?)?.toDouble() ?? 0.0;
+        return _sortAscending ? pctA.compareTo(pctB) : pctB.compareTo(pctA);
+      });
     });
   }
 
@@ -219,8 +228,109 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
                     padding: const EdgeInsets.fromLTRB(24, 24, 24, 8),
                     child: _buildConsoleToggle(poppins),
                   ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () {
+                              setState(() {
+                                _attendanceCategory = 'member';
+                              });
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              decoration: BoxDecoration(
+                                color: _attendanceCategory == 'member'
+                                    ? const Color(0xFF4DA6FF).withValues(alpha: 0.15)
+                                    : Colors.white.withValues(alpha: 0.03),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: _attendanceCategory == 'member'
+                                      ? const Color(0xFF4DA6FF).withValues(alpha: 0.3)
+                                      : Colors.white10,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.people_rounded,
+                                    color: _attendanceCategory == 'member' ? const Color(0xFF4DA6FF) : Colors.white70,
+                                    size: 14,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Members',
+                                    style: poppins(
+                                      fontSize: 12,
+                                      color: _attendanceCategory == 'member' ? const Color(0xFF4DA6FF) : Colors.white70,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () {
+                              setState(() {
+                                _attendanceCategory = 'lead';
+                              });
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(vertical: 10),
+                              decoration: BoxDecoration(
+                                color: _attendanceCategory == 'lead'
+                                    ? const Color(0xFF00C48C).withValues(alpha: 0.15)
+                                    : Colors.white.withValues(alpha: 0.03),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: _attendanceCategory == 'lead'
+                                      ? const Color(0xFF00C48C).withValues(alpha: 0.3)
+                                      : Colors.white10,
+                                ),
+                              ),
+                                child: Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Icon(
+                                    Icons.supervisor_account_rounded,
+                                    color: _attendanceCategory == 'lead' ? const Color(0xFF00C48C) : Colors.white70,
+                                    size: 14,
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Leads',
+                                    style: poppins(
+                                      fontSize: 12,
+                                      color: _attendanceCategory == 'lead' ? const Color(0xFF00C48C) : Colors.white70,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                   Expanded(
-                    child: AttendanceTab(userData: widget.userData),
+                    child: _attendanceCategory == 'lead'
+                        ? AttendanceTab(
+                            key: const ValueKey('leads_attendance'),
+                            userData: widget.userData,
+                            forceTeam: 'Leads',
+                          )
+                        : AttendanceTab(
+                            key: const ValueKey('members_attendance'),
+                            userData: widget.userData,
+                          ),
                   ),
                 ],
               )
@@ -243,9 +353,51 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
                                 Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(
-                                      'Attendance Control',
-                                      style: poppins(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white),
+                                    Row(
+                                      children: [
+                                        Text(
+                                          'Attendance Control',
+                                          style: poppins(fontSize: 26, fontWeight: FontWeight.bold, color: Colors.white),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        GestureDetector(
+                                          onTap: () {
+                                            setState(() {
+                                              _sortAscending = !_sortAscending;
+                                              _applyFilters();
+                                            });
+                                          },
+                                          child: Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                                            decoration: BoxDecoration(
+                                              color: const Color(0xFF4DA6FF).withValues(alpha: 0.1),
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(color: const Color(0xFF4DA6FF).withValues(alpha: 0.2)),
+                                            ),
+                                            child: Row(
+                                              mainAxisSize: MainAxisSize.min,
+                                              children: [
+                                                Icon(
+                                                  _sortAscending
+                                                      ? Icons.arrow_upward_rounded
+                                                      : Icons.arrow_downward_rounded,
+                                                  color: const Color(0xFF4DA6FF),
+                                                  size: 13,
+                                                ),
+                                                const SizedBox(width: 4),
+                                                Text(
+                                                  _sortAscending ? 'Shortest' : 'Longest',
+                                                  style: poppins(
+                                                    fontSize: 10.5,
+                                                    color: const Color(0xFF4DA6FF),
+                                                    fontWeight: FontWeight.bold,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ],
                                     ),
                                     Text(
                                       'Admin Directory Console',

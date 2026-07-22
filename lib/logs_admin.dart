@@ -26,6 +26,7 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
   List<String> _teams = ['All', 'PR', 'Media', 'Events', 'Web Dev', 'Admin'];
   final List<String> _roles = ['All Roles', 'Leads Only', 'Members Only'];
   final TextEditingController _searchCtrl = TextEditingController();
+  bool _sortAscending = false;
   Timer? _refreshTimer;
   io.Socket? _socket;
   TabController? _tabController;
@@ -343,6 +344,41 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
       return true;
     }).toList();
 
+    // Sort Worked Hours by duration
+    filteredSummaryUsers.sort((a, b) {
+      final sessionsA = (a['sessions'] as List? ?? []).where((s) {
+        return _isSessionInSelectedWeek(s['start_time']);
+      }).toList();
+      int totalSecondsA = 0;
+      for (final s in sessionsA) {
+        if (s['is_active'] == true) {
+          final start = DateTime.tryParse(s['start_time'] ?? '')?.toLocal();
+          if (start != null) {
+            totalSecondsA += DateTime.now().difference(start).inSeconds;
+          }
+        } else {
+          totalSecondsA += int.tryParse(s['duration_seconds']?.toString() ?? '0') ?? 0;
+        }
+      }
+
+      final sessionsB = (b['sessions'] as List? ?? []).where((s) {
+        return _isSessionInSelectedWeek(s['start_time']);
+      }).toList();
+      int totalSecondsB = 0;
+      for (final s in sessionsB) {
+        if (s['is_active'] == true) {
+          final start = DateTime.tryParse(s['start_time'] ?? '')?.toLocal();
+          if (start != null) {
+            totalSecondsB += DateTime.now().difference(start).inSeconds;
+          }
+        } else {
+          totalSecondsB += int.tryParse(s['duration_seconds']?.toString() ?? '0') ?? 0;
+        }
+      }
+
+      return _sortAscending ? totalSecondsA.compareTo(totalSecondsB) : totalSecondsB.compareTo(totalSecondsA);
+    });
+
     return Scaffold(
       backgroundColor: Colors.transparent,
       appBar: AppBar(
@@ -574,9 +610,50 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(
-                              'Weekly Summaries',
-                              style: poppins(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                            Row(
+                              children: [
+                                Text(
+                                  'Weekly Summaries',
+                                  style: poppins(fontSize: 15, fontWeight: FontWeight.bold, color: Colors.white),
+                                ),
+                                const SizedBox(width: 8),
+                                GestureDetector(
+                                  onTap: () {
+                                    setState(() {
+                                      _sortAscending = !_sortAscending;
+                                    });
+                                  },
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF4DA6FF).withValues(alpha: 0.1),
+                                      borderRadius: BorderRadius.circular(8),
+                                      border: Border.all(color: const Color(0xFF4DA6FF).withValues(alpha: 0.2)),
+                                    ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          _sortAscending
+                                              ? Icons.arrow_upward_rounded
+                                              : Icons.arrow_downward_rounded,
+                                          color: const Color(0xFF4DA6FF),
+                                          size: 13,
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          _sortAscending ? 'Shortest' : 'Longest',
+                                          style: poppins(
+                                            fontSize: 10.5,
+                                            color: const Color(0xFF4DA6FF),
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 12),

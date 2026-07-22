@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
+import 'package:intl/intl.dart';
 import 'main.dart'; // For UserData, DesktopPageWrapper, apiBaseUrl
 import 'app_toast.dart';
 
@@ -572,12 +573,13 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
               return DataRow(
                 cells: _columns.map((col) {
                   final columnName = col['column_name'];
-                  final val = row[columnName]?.toString() ?? 'NULL';
+                  final rawVal = row[columnName];
+                  final displayVal = rawVal == null ? 'NULL' : _formatCellValue(rawVal.toString());
                   return DataCell(
                     Text(
-                      val,
+                      displayVal,
                       style: poppins(
-                        color: val == 'NULL' ? Colors.white30 : Colors.white,
+                        color: rawVal == null ? Colors.white30 : Colors.white,
                         fontSize: 12.0,
                         fontWeight: FontWeight.w500,
                       ),
@@ -590,6 +592,23 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
         ),
       ),
     );
+  }
+
+  // ── Format cell values — convert UTC ISO timestamps to local time ──
+  String _formatCellValue(String? raw) {
+    if (raw == null || raw.isEmpty) return 'NULL';
+    // Detect ISO 8601 timestamp pattern: contains 'T' and ends with 'Z' or '+'
+    final trimmed = raw.trim();
+    if (trimmed.length >= 16 &&
+        (trimmed.contains('T') || RegExp(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}').hasMatch(trimmed))) {
+      // Try parsing as DateTime
+      final dt = DateTime.tryParse(trimmed);
+      if (dt != null) {
+        final local = dt.toLocal();
+        return DateFormat('dd/MM/yyyy  HH:mm:ss').format(local);
+      }
+    }
+    return trimmed;
   }
 
   // ── Shared widget builders ────────────────────────────────────

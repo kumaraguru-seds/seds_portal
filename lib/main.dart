@@ -36,6 +36,8 @@ import 'update_checker.dart';
 import 'developer_support_page.dart';
 import 'export_data_page.dart';
 import 'database_viewer_page.dart';
+import 'inspect_weekly_targets.dart';
+import 'critical_actions_needed.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -1128,6 +1130,7 @@ class _MainPageState extends State<MainPage> {
               currentIndex: _currentIndex,
               userData: widget.userData,
               onTap: (index) {
+
                 _pageController.animateToPage(
                   index,
                   duration: const Duration(milliseconds: 300),
@@ -1960,13 +1963,14 @@ class _ProfileTabState extends State<ProfileTab> {
   bool _isLoadingBiometrics = true;
   List<dynamic> _deficits = [];
   bool _loadingDeficits = false;
+  Map<String, dynamic>? _myPersonalDeficit; // for Member role self-check
 
   @override
   void initState() {
     super.initState();
     _checkBiometricStatus();
     final String role = widget.userData?.role ?? 'Guest';
-    if (role == 'Admin' || role == 'SuperAdmin') {
+    if (role == 'Admin' || role == 'SuperAdmin' || role == 'Lead' || role == 'Member') {
       _fetchDeficits();
     }
   }
@@ -1978,10 +1982,37 @@ class _ProfileTabState extends State<ProfileTab> {
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         if (mounted && data['success'] == true) {
-          setState(() {
-            _deficits = data['deficits'] ?? [];
-            _loadingDeficits = false;
-          });
+          List<dynamic> allDefs = data['deficits'] ?? [];
+          final role = widget.userData?.role ?? '';
+          final team = (widget.userData?.team ?? '').toLowerCase().trim();
+          final email = (widget.userData?.email ?? '').toLowerCase().trim();
+
+          if (role == 'Lead') {
+            // Lead sees only their team's deficits
+            final filtered = allDefs.where((d) {
+              final teamStr = (d['team'] ?? '').toString().toLowerCase();
+              return teamStr.split(',').map((t) => t.trim()).any((t) => t == team);
+            }).toList();
+            setState(() {
+              _deficits = filtered;
+              _loadingDeficits = false;
+            });
+          } else if (role == 'Member') {
+            // Member sees their own personal deficit row
+            final myRow = allDefs.where((d) =>
+              (d['email'] ?? '').toString().toLowerCase().trim() == email
+            ).toList();
+            setState(() {
+              _deficits = allDefs;
+              _myPersonalDeficit = myRow.isNotEmpty ? myRow.first : null;
+              _loadingDeficits = false;
+            });
+          } else {
+            setState(() {
+              _deficits = allDefs;
+              _loadingDeficits = false;
+            });
+          }
         }
       }
     } catch (_) {
@@ -2319,127 +2350,186 @@ class _ProfileTabState extends State<ProfileTab> {
           width: 1.5,
         ),
       ),
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          title: Row(
-            children: [
-              Container(
-                width: 32,
-                height: 32,
-                decoration: BoxDecoration(
-                  color: const Color(0xFFFF6B6B).withValues(alpha: 0.15),
-                  shape: BoxShape.circle,
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () async {
+            final role = widget.userData?.role ?? '';
+            final team = role == 'Lead' ? widget.userData?.team : null;
+            await Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => CriticalActionsNeededPage(
+                  userData: widget.userData,
+                  teamFilter: team,
                 ),
-                child: const Icon(
-                  Icons.warning_amber_rounded,
+              ),
+            );
+            _fetchDeficits();
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Row(
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFF6B6B).withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.warning_amber_rounded,
+                    color: Color(0xFFFF6B6B),
+                    size: 18,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _deficits.isEmpty
+                            ? 'All Clear ✓'
+                            : 'Actions Needed (${_deficits.length})',
+                        style: poppins(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                          color: const Color(0xFFFF6B6B),
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        (widget.userData?.role ?? '') == 'Lead'
+                            ? '${widget.userData?.team ?? ''} team — deficits & absents'
+                            : 'Target deficits or absents detected',
+                        style: poppins(fontSize: 11, color: Colors.white54),
+                      ),
+                    ],
+                  ),
+                ),
+                const Icon(
+                  Icons.arrow_forward_ios_rounded,
                   color: Color(0xFFFF6B6B),
-                  size: 18,
+                  size: 16,
                 ),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                'Actions Needed (${_deficits.length})',
-                style: poppins(
-                  fontSize: 15,
-                  fontWeight: FontWeight.bold,
-                  color: const Color(0xFFFF6B6B),
-                ),
-              ),
-            ],
-          ),
-          subtitle: Padding(
-            padding: const EdgeInsets.only(left: 44),
-            child: Text(
-              'Target deficits or absents detected',
-              style: poppins(fontSize: 11, color: Colors.white54),
+              ],
             ),
           ),
-          iconColor: const Color(0xFFFF6B6B),
-          collapsedIconColor: const Color(0xFFFF6B6B),
-          childrenPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          children: _deficits.map<Widget>((def) {
-            final double workedHours = (def['weekly_seconds'] ?? 0) / 3600.0;
-            final double targetHours = (def['target_seconds'] ?? 0) / 3600.0;
-            final List<Widget> alerts = [];
+        ),
+      ),
+    );
+  }
 
-            if (def['has_hours_deficit'] == true) {
-              alerts.add(
-                Container(
-                  margin: const EdgeInsets.only(top: 4, right: 6),
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFF6B6B).withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    'Worked: ${workedHours.toStringAsFixed(1)}h / ${targetHours.toStringAsFixed(0)}h',
-                    style: poppins(fontSize: 11, color: const Color(0xFFFF6B6B), fontWeight: FontWeight.w600),
-                  ),
-                ),
-              );
-            }
+  /// Personal action card for Members — shows their own hours/absent status
+  Widget _buildMemberActionCard() {
+    final poppins = GoogleFonts.poppins;
+    if (_loadingDeficits) {
+      return const Center(
+        child: Padding(
+          padding: EdgeInsets.all(16.0),
+          child: CircularProgressIndicator(color: Color(0xFF4DA6FF)),
+        ),
+      );
+    }
 
-            if (def['latest_absent'] != null) {
-              final date = def['latest_absent']['date'] ?? '';
-              alerts.add(
-                Container(
-                  margin: const EdgeInsets.only(top: 4),
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFFC048).withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    'Absent: $date',
-                    style: poppins(fontSize: 11, color: const Color(0xFFFFC048), fontWeight: FontWeight.w600),
-                  ),
-                ),
-              );
-            }
-
-            final String imgUrl = def['image_url'] ?? '';
-
-            return Container(
-              margin: const EdgeInsets.only(bottom: 12),
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.04),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+    final def = _myPersonalDeficit;
+    if (def == null) {
+      // No deficit found — all good
+      return Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFF00C48C).withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFF00C48C).withValues(alpha: 0.25)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.check_circle_rounded, color: Color(0xFF00C48C), size: 24),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Great job! You are on track this week 🎉',
+                style: poppins(color: Colors.white70, fontSize: 13),
               ),
-              child: Row(
-                children: [
-                  CircleAvatar(
-                    radius: 20,
-                    backgroundColor: const Color(0xFF4DA6FF).withValues(alpha: 0.1),
-                    backgroundImage: imgUrl.isNotEmpty ? NetworkImage(imgUrl) : null,
-                    child: imgUrl.isEmpty
-                        ? const Icon(Icons.person_rounded, color: Colors.white70, size: 20)
-                        : null,
+            ),
+          ],
+        ),
+      );
+    }
+
+    final int weeklySec = (def['weekly_seconds'] ?? 0) as int;
+    final double targetHours = (def['target_seconds'] ?? 0) / 3600.0;
+    final int wh = weeklySec ~/ 3600;
+    final int wm = (weeklySec % 3600) ~/ 60;
+    final int ws = weeklySec % 60;
+    final String workedStr = wh > 0 ? '${wh}h ${wm}m ${ws}s' : wm > 0 ? '${wm}m ${ws}s' : '${ws}s';
+    final bool hasHoursDeficit = def['has_hours_deficit'] == true;
+    final bool hasAbsent = def['latest_absent'] != null;
+
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: const Color(0xFFFF6B6B).withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: const Color(0xFFFF6B6B).withValues(alpha: 0.25),
+          width: 1.5,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 32, height: 32,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFF6B6B).withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          def['name'] ?? 'N/A',
-                          style: poppins(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
-                        ),
-                        Text(
-                          '${def['role']} • ${def['team']}',
-                          style: poppins(color: Colors.white54, fontSize: 11),
-                        ),
-                        const SizedBox(height: 4),
-                        Wrap(children: alerts),
-                      ],
-                    ),
+                  child: const Icon(Icons.warning_amber_rounded, color: Color(0xFFFF6B6B), size: 18),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'My Actions Needed',
+                    style: poppins(fontSize: 15, fontWeight: FontWeight.bold, color: const Color(0xFFFF6B6B)),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (hasHoursDeficit)
+              Row(
+                children: [
+                  const Icon(Icons.hourglass_empty_rounded, color: Color(0xFFFF6B6B), size: 14),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Hours this week: $workedStr / ${targetHours.toStringAsFixed(0)}h target',
+                    style: poppins(fontSize: 12, color: const Color(0xFFFF6B6B), fontWeight: FontWeight.w600),
                   ),
                 ],
               ),
-            );
-          }).toList(),
+            if (hasAbsent) ...[
+              if (hasHoursDeficit) const SizedBox(height: 6),
+              Row(
+                children: [
+                  const Icon(Icons.calendar_today_rounded, color: Color(0xFFFFC048), size: 14),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Absent on ${def['latest_absent']['date'] ?? ''} (${def['latest_absent']['team'] ?? ''})',
+                    style: poppins(fontSize: 12, color: const Color(0xFFFFC048), fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ],
+          ],
         ),
       ),
     );
@@ -2693,6 +2783,14 @@ class _ProfileTabState extends State<ProfileTab> {
               const SizedBox(height: 24),
               if (role == 'Admin' || role == 'SuperAdmin') ...[
                 _buildAdminAlertsCard(),
+                const SizedBox(height: 24),
+              ],
+              if (role == 'Lead') ...[
+                _buildAdminAlertsCard(),
+                const SizedBox(height: 24),
+              ],
+              if (role == 'Member') ...[
+                _buildMemberActionCard(),
                 const SizedBox(height: 24),
               ],
 
@@ -3334,6 +3432,26 @@ class _ProfileTabState extends State<ProfileTab> {
                 poppins: poppins,
               ),
               const SizedBox(height: 10),
+
+              // Inspect Weekly Targets (Admin and Lead only)
+              if (role == 'Admin' || role == 'SuperAdmin' || role == 'Lead') ...[
+                _buildProfileNavButton(
+                  icon: Icons.verified_rounded,
+                  label: 'Inspect Weekly Targets',
+                  subtitle: 'Check weekly work hours targets achievement',
+                  color: const Color(0xFFFFB800),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => DesktopPageWrapper(
+                        child: InspectWeeklyTargetsPage(userData: widget.userData),
+                      ),
+                    ),
+                  ),
+                  poppins: poppins,
+                ),
+                const SizedBox(height: 10),
+              ],
 
               // Update Coordinates (Admin only)
               if (role == 'Admin') ...[

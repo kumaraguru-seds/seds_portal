@@ -47,6 +47,7 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
   int _completedSecondsThisWeek = 0;
   bool _loadingHistory = true;
   bool _loadingTeam = true;
+  bool _sortAscending = false;
   Timer? _teamRefreshTimer;
 
   // Weekly target for leads
@@ -113,6 +114,84 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
     }
   }
 
+  bool _isPointInPolygon(latlong.LatLng point, List<latlong.LatLng> polygon) {
+    if (polygon.length < 3) return true;
+    bool isInside = false;
+    int j = polygon.length - 1;
+
+    for (int i = 0; i < polygon.length; i++) {
+      final xi = polygon[i].latitude;
+      final yi = polygon[i].longitude;
+      final xj = polygon[j].latitude;
+      final yj = polygon[j].longitude;
+
+      final intersect = ((yi > point.longitude) != (yj > point.longitude)) &&
+          (point.latitude < (xj - xi) * (point.longitude - yi) / (yj - yi) + xi);
+
+      if (intersect) isInside = !isInside;
+      j = i;
+    }
+    return isInside;
+  }
+
+  double _getDistanceToPolygon(latlong.LatLng pt, List<latlong.LatLng> polygon) {
+    if (polygon.isEmpty) return 0.0;
+    double minDistance = double.infinity;
+    const latlong.Distance distance = latlong.Distance();
+
+    for (int i = 0; i < polygon.length; i++) {
+      final p1 = polygon[i];
+      final p2 = polygon[(i + 1) % polygon.length];
+      final d = _getDistanceToSegment(pt, p1, p2, distance);
+      if (d < minDistance) {
+        minDistance = d;
+      }
+    }
+    return minDistance;
+  }
+
+  double _getDistanceToSegment(latlong.LatLng p, latlong.LatLng a, latlong.LatLng b, latlong.Distance distance) {
+    final double l2 = _distSq(a, b);
+    if (l2 == 0) return distance.as(latlong.LengthUnit.Meter, p, a);
+    double t = ((p.latitude - a.latitude) * (b.latitude - a.latitude) +
+                (p.longitude - a.longitude) * (b.longitude - a.longitude)) / l2;
+    t = t.clamp(0.0, 1.0);
+    final latlong.LatLng projection = latlong.LatLng(
+      a.latitude + t * (b.latitude - a.latitude),
+      a.longitude + t * (b.longitude - a.longitude),
+    );
+    return distance.as(latlong.LengthUnit.Meter, p, projection);
+  }
+
+  double _distSq(latlong.LatLng a, latlong.LatLng b) {
+    final dLat = a.latitude - b.latitude;
+    final dLng = a.longitude - b.longitude;
+    return dLat * dLat + dLng * dLng;
+  }
+
+  bool _checkGeofenceStatus(Position pos) {
+    if (_geofencePoints.isEmpty) return true;
+    final pt = latlong.LatLng(pos.latitude, pos.longitude);
+    final isInsideRaw = _isPointInPolygon(pt, _geofencePoints);
+    if (isInsideRaw) return true;
+
+    final accuracyBuffer = pos.accuracy.clamp(5.0, 15.0);
+    final dist = _getDistanceToPolygon(pt, _geofencePoints);
+    return dist <= accuracyBuffer;
+  }
+
+  void _checkLocalGeofence(Position pos) {
+    if (!_isWorking) return;
+    final bool isInside = _checkGeofenceStatus(pos);
+    if (!isInside && !_isPaused) {
+      setState(() => _isPaused = true);
+      _showSnack('Work Session Paused: You went outside the coordinates.', type: ToastType.warning);
+    } else if (isInside && _isPaused) {
+      setState(() => _isPaused = false);
+      _showSnack('Work Session Resumed: You returned inside the coordinates.', type: ToastType.success);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -163,8 +242,9 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
               _currentPosition = pos;
               _lastPos = pos;
             });
-            // If session is active, immediately post high accuracy coordinate update
+            // If session is active, check geofence locally & post stream location
             if (_isWorking) {
+              _checkLocalGeofence(pos);
               _postStreamLocation(pos);
             }
             try {
@@ -623,12 +703,36 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
     final u = widget.userData;
     if (u == null) return;
     try {
+      // Validate attendance status for today
+      final statusRes = await http.get(
+        Uri.parse('$apiBaseUrl/api/attendance/today-status?email=${Uri.encodeComponent(u.email)}'),
+      ).timeout(const Duration(seconds: 10));
+
+      if (statusRes.statusCode == 200) {
+        final statusData = jsonDecode(statusRes.body);
+        if (statusData['allowed'] != true) {
+          final String msg = statusData['message'] ?? 'Attendance validation failed.';
+          _showSnack(msg, type: ToastType.error);
+          return;
+        }
+      } else {
+        _showSnack('Attendance validation failed. Server error.', type: ToastType.error);
+        return;
+      }
+
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
       }
       if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
         _showSnack('Location permission is required to start a work session.');
+        return;
+      }
+
+      final currentPos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.best);
+      _currentPosition = currentPos;
+      if (!_checkGeofenceStatus(currentPos)) {
+        _showSnack('You must be inside the SEDS Lab fence area to start a work session.', type: ToastType.error);
         return;
       }
 
@@ -1761,58 +1865,113 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
 
             // ── Tab 2: Monitor Team ──
             Builder(
-              builder: (context) {
-                final filteredTeam = _teamSessions.where((member) {
-                  final q = _teamSearchQuery.toLowerCase();
-                  if (q.isEmpty) return true;
-                  final name = (member['user_name'] as String? ?? '').toLowerCase();
-                  final roll = (member['roll_number'] as String? ?? '').toLowerCase();
-                  final team = (member['team'] as String? ?? '').toLowerCase();
-                  return name.contains(q) || roll.contains(q) || team.contains(q);
-                }).toList();
+  builder: (context) {
+    final filteredTeam = _teamSessions.where((member) {
+      final q = _teamSearchQuery.toLowerCase();
+      if (q.isEmpty) return true;
+      final name = (member['user_name'] as String? ?? '').toLowerCase();
+      final roll = (member['roll_number'] as String? ?? '').toLowerCase();
+      final team = (member['team'] as String? ?? '').toLowerCase();
+      return name.contains(q) || roll.contains(q) || team.contains(q);
+    }).toList();
 
-                return Column(
-                  children: [
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.06),
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(
-                            color: Colors.white.withValues(alpha: 0.1),
-                          ),
-                        ),
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        child: TextField(
-                          controller: _teamSearchController,
-                          style: poppins(color: Colors.white, fontSize: 14),
-                          decoration: InputDecoration(
-                            hintText: 'Search by user name, roll number, team...',
-                            hintStyle: poppins(color: Colors.white38, fontSize: 13),
-                            border: InputBorder.none,
-                            icon: const Icon(Icons.search_rounded, color: Color(0xFF4DA6FF)),
-                            suffixIcon: _teamSearchQuery.isNotEmpty
-                                ? IconButton(
-                                    icon: const Icon(Icons.clear_rounded, color: Colors.white70, size: 20),
-                                    onPressed: () {
-                                      _teamSearchController.clear();
-                                      setState(() {
-                                        _teamSearchQuery = '';
-                                      });
-                                    },
-                                  )
-                                : null,
-                          ),
-                          onChanged: (val) {
-                            setState(() {
-                              _teamSearchQuery = val.trim();
-                            });
-                          },
+    // Sort by weekly_seconds
+    filteredTeam.sort((a, b) {
+      final int secA = int.tryParse(a['weekly_seconds']?.toString() ?? '0') ?? 0;
+      final int secB = int.tryParse(b['weekly_seconds']?.toString() ?? '0') ?? 0;
+      return _sortAscending ? secA.compareTo(secB) : secB.compareTo(secA);
+    });
+
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.1),
+              ),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: TextField(
+              controller: _teamSearchController,
+              style: poppins(color: Colors.white, fontSize: 14),
+              decoration: InputDecoration(
+                hintText: 'Search by user name, roll number, team...',
+                hintStyle: poppins(color: Colors.white38, fontSize: 13),
+                border: InputBorder.none,
+                icon: const Icon(Icons.search_rounded, color: Color(0xFF4DA6FF)),
+                suffixIcon: _teamSearchQuery.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear_rounded, color: Colors.white70, size: 20),
+                        onPressed: () {
+                          _teamSearchController.clear();
+                          setState(() {
+                            _teamSearchQuery = '';
+                          });
+                        },
+                      )
+                    : null,
+              ),
+              onChanged: (val) {
+                setState(() {
+                  _teamSearchQuery = val.trim();
+                });
+              },
+            ),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(24, 4, 24, 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Team Status (${filteredTeam.length})',
+                style: poppins(fontSize: 13, color: Colors.white70, fontWeight: FontWeight.bold),
+              ),
+              GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _sortAscending = !_sortAscending;
+                  });
+                },
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF4DA6FF).withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFF4DA6FF).withValues(alpha: 0.2)),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        _sortAscending
+                            ? Icons.arrow_upward_rounded
+                            : Icons.arrow_downward_rounded,
+                        color: const Color(0xFF4DA6FF),
+                        size: 13,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        _sortAscending ? 'Shortest' : 'Longest',
+                        style: poppins(
+                          fontSize: 10.5,
+                          color: const Color(0xFF4DA6FF),
+                          fontWeight: FontWeight.bold,
                         ),
                       ),
-                    ),
-                    Expanded(
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
                       child: RefreshIndicator(
                         onRefresh: _loadTeamStatus,
                         color: const Color(0xFF4DA6FF),

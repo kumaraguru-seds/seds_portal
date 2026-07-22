@@ -28,7 +28,8 @@ class _StatisticsPageState extends State<StatisticsPage>
   List<String> _leadTeams = [];
   String _selectedStatsTeam = 'All';
   int _selectedBarIndex = -1;
-  final Map<String, String> _cardSelectedTeams = {};
+  int _selectedAttendanceBarIndex = -1;
+  String _activeTab = 'logs'; // 'logs' or 'attendance'
 
   @override
   void didUpdateWidget(covariant StatisticsPage oldWidget) {
@@ -68,47 +69,7 @@ class _StatisticsPageState extends State<StatisticsPage>
 
 
       if (_isMember) {
-        final memberTeams = (widget.userData?.team ?? '')
-            .split(',')
-            .map((t) => t.trim())
-            .where((t) => t.isNotEmpty)
-            .toList();
-
-        if (memberTeams.length > 1) {
-          final List<Map<String, dynamic>> combined = [];
-          for (final t in memberTeams) {
-            final teamUrl =
-                '$apiBaseUrl/api/stats/performance-summary?team=${Uri.encodeComponent(t)}';
-            final teamRes = await http
-                .get(Uri.parse(teamUrl))
-                .timeout(const Duration(seconds: 20));
-            if (teamRes.statusCode == 200) {
-              final teamData = jsonDecode(teamRes.body);
-              final teamUsers = List<Map<String, dynamic>>.from(
-                teamData['users'] ?? [],
-              );
-              final myEntry = teamUsers
-                  .where(
-                    (u) =>
-                        (u['email'] as String? ?? '').toLowerCase() ==
-                        (widget.userData?.email ?? '').toLowerCase(),
-                  )
-                  .toList();
-              combined.addAll(myEntry);
-            }
-          }
-          if (mounted) {
-            setState(() {
-              _allUsers = combined;
-              _filtered = combined;
-            });
-            _animCtrl.forward(from: 0);
-          }
-          return;
-        }
-
-        url +=
-            '?team=${Uri.encodeComponent(memberTeams.isNotEmpty ? memberTeams.first : '')}';
+        // Members load standard performance summary without team filtering duplication
       } else if (_isLead) {
         final teamList = (widget.userData?.team ?? '')
             .split(',')
@@ -501,6 +462,26 @@ class _StatisticsPageState extends State<StatisticsPage>
                       : AnimatedBuilder(
                           animation: _anim,
                           builder: (context, child) {
+                            final displayUsers = List<Map<String, dynamic>>.from(_filtered);
+                            if (_activeTab == 'logs') {
+                              displayUsers.sort((a, b) {
+                                final aSec = a['total_seconds'] as int? ?? 0;
+                                final bSec = b['total_seconds'] as int? ?? 0;
+                                return bSec.compareTo(aSec);
+                              });
+                            } else {
+                              displayUsers.sort((a, b) {
+                                final aPct = (a['attendance_pct'] as num? ?? 0.0).toDouble();
+                                final bPct = (b['attendance_pct'] as num? ?? 0.0).toDouble();
+                                if (bPct != aPct) {
+                                  return bPct.compareTo(aPct);
+                                }
+                                final aPres = a['attendance_present'] as int? ?? 0;
+                                final bPres = b['attendance_present'] as int? ?? 0;
+                                return bPres.compareTo(aPres);
+                              });
+                            }
+
                             return RefreshIndicator(
                               onRefresh: _loadStats,
                               color: const Color(0xFF4DA6FF),
@@ -565,23 +546,127 @@ class _StatisticsPageState extends State<StatisticsPage>
                                           const SizedBox(height: 8),
                                         ],
 
+                                        // Segmented tab selector to toggle between Logs & Attendance
+                                        if (!_isMember) ...[
+                                          Container(
+                                            margin: const EdgeInsets.only(bottom: 16),
+                                            padding: const EdgeInsets.all(4),
+                                            decoration: BoxDecoration(
+                                              color: Colors.white.withValues(alpha: 0.05),
+                                              borderRadius: BorderRadius.circular(14),
+                                              border: Border.all(
+                                                color: Colors.white.withValues(alpha: 0.08),
+                                              ),
+                                            ),
+                                            child: Row(
+                                              children: [
+                                                Expanded(
+                                                  child: GestureDetector(
+                                                    onTap: () => setState(() => _activeTab = 'logs'),
+                                                    child: AnimatedContainer(
+                                                      duration: const Duration(milliseconds: 200),
+                                                      padding: const EdgeInsets.symmetric(vertical: 10),
+                                                      decoration: BoxDecoration(
+                                                        color: _activeTab == 'logs'
+                                                            ? const Color(0xFF4DA6FF).withValues(alpha: 0.15)
+                                                            : Colors.transparent,
+                                                        borderRadius: BorderRadius.circular(10),
+                                                        border: Border.all(
+                                                          color: _activeTab == 'logs'
+                                                              ? const Color(0xFF4DA6FF).withValues(alpha: 0.3)
+                                                              : Colors.transparent,
+                                                        ),
+                                                      ),
+                                                      child: Center(
+                                                        child: Row(
+                                                          mainAxisAlignment: MainAxisAlignment.center,
+                                                          children: [
+                                                            Icon(
+                                                              Icons.timer_rounded,
+                                                              color: _activeTab == 'logs' ? const Color(0xFF4DA6FF) : Colors.white60,
+                                                              size: 16,
+                                                            ),
+                                                            const SizedBox(width: 6),
+                                                            Text(
+                                                              'Logs (Work Hours)',
+                                                              style: poppins(
+                                                                color: _activeTab == 'logs' ? const Color(0xFF4DA6FF) : Colors.white60,
+                                                                fontWeight: FontWeight.bold,
+                                                                fontSize: 11.5,
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 4),
+                                                Expanded(
+                                                  child: GestureDetector(
+                                                    onTap: () => setState(() => _activeTab = 'attendance'),
+                                                    child: AnimatedContainer(
+                                                      duration: const Duration(milliseconds: 200),
+                                                      padding: const EdgeInsets.symmetric(vertical: 10),
+                                                      decoration: BoxDecoration(
+                                                        color: _activeTab == 'attendance'
+                                                            ? const Color(0xFF00C48C).withValues(alpha: 0.15)
+                                                            : Colors.transparent,
+                                                        borderRadius: BorderRadius.circular(10),
+                                                        border: Border.all(
+                                                          color: _activeTab == 'attendance'
+                                                              ? const Color(0xFF00C48C).withValues(alpha: 0.3)
+                                                              : Colors.transparent,
+                                                        ),
+                                                      ),
+                                                      child: Center(
+                                                        child: Row(
+                                                          mainAxisAlignment: MainAxisAlignment.center,
+                                                          children: [
+                                                            Icon(
+                                                              Icons.fact_check_rounded,
+                                                              color: _activeTab == 'attendance' ? const Color(0xFF00C48C) : Colors.white60,
+                                                              size: 16,
+                                                            ),
+                                                            const SizedBox(width: 6),
+                                                            Text(
+                                                              'Attendance',
+                                                              style: poppins(
+                                                                color: _activeTab == 'attendance' ? const Color(0xFF00C48C) : Colors.white60,
+                                                                fontWeight: FontWeight.bold,
+                                                                fontSize: 11.5,
+                                                              ),
+                                                            ),
+                                                          ],
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+
                                         // Summary bar chart
-                                        if (_filtered.length > 1) ...[
-                                          _buildBarChart(maxSec, poppins),
+                                        if (displayUsers.length > 1) ...[
+                                          _activeTab == 'logs'
+                                              ? _buildBarChart(maxSec, poppins)
+                                              : _buildAttendanceBarChart(poppins),
                                           const SizedBox(height: 16),
                                         ],
 
                                         // Top performer badge
-                                        if (_filtered.isNotEmpty)
+                                        if (displayUsers.isNotEmpty)
                                           _buildTopPerformerCard(
-                                            _filtered.first,
+                                            displayUsers.first,
                                             poppins,
                                           ),
 
                                         const SizedBox(height: 8),
 
                                         // User cards
-                                        ..._filtered.asMap().entries.map((
+                                        ...displayUsers.asMap().entries.map((
                                           entry,
                                         ) {
                                           return _buildUserCard(
@@ -786,6 +871,193 @@ class _StatisticsPageState extends State<StatisticsPage>
     );
   }
 
+  Widget _buildAttendanceBarChart(dynamic poppins) {
+    final displayCount = math.min(_filtered.length, 8);
+    final topUsers = List<Map<String, dynamic>>.from(_filtered);
+    topUsers.sort((a, b) {
+      final aPct = (a['attendance_pct'] as num? ?? 0.0).toDouble();
+      final bPct = (b['attendance_pct'] as num? ?? 0.0).toDouble();
+      return bPct.compareTo(aPct);
+    });
+    final topAttendanceUsers = topUsers.take(displayCount).toList();
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.2),
+            blurRadius: 16,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'Attendance — Top $displayCount Performance',
+                style: poppins(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13.0,
+                ),
+              ),
+              if (_selectedAttendanceBarIndex != -1 &&
+                  _selectedAttendanceBarIndex < topAttendanceUsers.length)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF00C48C).withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: const Color(0xFF00C48C).withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Text(
+                    '${topAttendanceUsers[_selectedAttendanceBarIndex]['name'].split(' ').first}: ${(topAttendanceUsers[_selectedAttendanceBarIndex]['attendance_pct'] as num? ?? 0.0).toDouble().toStringAsFixed(1)}%',
+                    style: poppins(
+                      color: const Color(0xFF00C48C),
+                      fontSize: 10.0,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            height: 220,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: topAttendanceUsers.asMap().entries.map((entry) {
+                final u = entry.value;
+                final pct = (u['attendance_pct'] as num? ?? 0.0).toDouble();
+                final ratio = pct / 100.0;
+                final isSelected = _selectedAttendanceBarIndex == entry.key;
+
+                final barH = (ratio * 150 * _anim.value).clamp(6.0, 150.0);
+
+                final colors = [
+                  [const Color(0xFF00C48C), const Color(0xFF00966C)],
+                  [const Color(0xFF4DA6FF), const Color(0xFF007FFF)],
+                  [const Color(0xFFFFD93D), const Color(0xFFFFB300)],
+                  [const Color(0xFF9B59B6), const Color(0xFF8E44AD)],
+                  [const Color(0xFFFF6B6B), const Color(0xFFE74C3C)],
+                  [const Color(0xFF00E676), const Color(0xFF00B0FF)],
+                  [const Color(0xFF1ABC9C), const Color(0xFF16A085)],
+                  [const Color(0xFFE67E22), const Color(0xFFD35400)],
+                ];
+                final colPair = colors[entry.key % colors.length];
+                final name = (u['name'] as String? ?? '').split(' ').first;
+
+                return Expanded(
+                  child: GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _selectedAttendanceBarIndex = isSelected ? -1 : entry.key;
+                      });
+                    },
+                    behavior: HitTestBehavior.opaque,
+                    child: AnimatedScale(
+                      scale: isSelected ? 1.05 : 1.0,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeOut,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            Text(
+                              '${pct.toStringAsFixed(0)}%',
+                              style: poppins(
+                                color: isSelected
+                                    ? const Color(0xFF00C48C)
+                                    : Colors.white70,
+                                fontSize: isSelected ? 9.5 : 8.0,
+                                fontWeight: isSelected
+                                    ? FontWeight.bold
+                                    : FontWeight.w500,
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                            const SizedBox(height: 6),
+                            Container(
+                              height: barH,
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.topCenter,
+                                  end: Alignment.bottomCenter,
+                                  colors: isSelected
+                                      ? [
+                                          const Color(0xFF00FFC4),
+                                          const Color(0xFF00966C),
+                                        ]
+                                      : colPair,
+                                ),
+                                borderRadius: BorderRadius.circular(8),
+                                border: isSelected
+                                    ? Border.all(
+                                        color: Colors.white,
+                                        width: 1.5,
+                                      )
+                                    : Border.all(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.1,
+                                        ),
+                                        width: 0.8,
+                                      ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color:
+                                        (isSelected
+                                                ? const Color(0xFF00FFC4)
+                                                : colPair.first)
+                                            .withValues(
+                                              alpha: isSelected ? 0.6 : 0.25,
+                                            ),
+                                    blurRadius: isSelected ? 12 : 6,
+                                    spreadRadius: isSelected ? 2 : 0,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              name,
+                              style: poppins(
+                                color: isSelected
+                                    ? const Color(0xFF00C48C)
+                                    : Colors.white,
+                                fontSize: isSelected ? 9.5 : 8.5,
+                                fontWeight: FontWeight.bold,
+                              ),
+                              textAlign: TextAlign.center,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTopPerformerCard(Map<String, dynamic> u, dynamic poppins) {
     return GestureDetector(
       onTap: () => _showUserAnalysis(u['email'] as String?),
@@ -825,20 +1097,8 @@ class _StatisticsPageState extends State<StatisticsPage>
             const SizedBox(width: 12),
             Expanded(
               child: Builder(builder: (context) {
-                final List<String> performerTeams = (u['team'] as String? ?? '')
-                    .split(',')
-                    .map((t) => t.trim())
-                    .where((t) => t.isNotEmpty)
-                    .toList();
-                final selectedPerformerTeam = _cardSelectedTeams[u['email']] ?? (performerTeams.isNotEmpty ? performerTeams.first : '');
-                final Map<String, dynamic>? performerStatsMap = u['team_stats'] != null ? Map<String, dynamic>.from(u['team_stats']) : null;
-                final Map<String, dynamic>? selectedPerformerStats = (performerStatsMap != null && selectedPerformerTeam.isNotEmpty)
-                    ? performerStatsMap[selectedPerformerTeam] != null ? Map<String, dynamic>.from(performerStatsMap[selectedPerformerTeam]) : null
-                    : null;
-
-                final totalSec = selectedPerformerStats != null
-                    ? selectedPerformerStats['total_seconds'] as int? ?? 0
-                    : u['total_seconds'] as int? ?? 0;
+                // Always use global totals — no per-team split
+                final totalSec = u['total_seconds'] as int? ?? 0;
 
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -894,8 +1154,7 @@ class _StatisticsPageState extends State<StatisticsPage>
                     Row(
                       children: [
                         Container(
-                          height: 24,
-                          padding: const EdgeInsets.symmetric(horizontal: 6),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                           decoration: BoxDecoration(
                             color: const Color(0xFF1A2B4A),
                             borderRadius: BorderRadius.circular(6),
@@ -903,35 +1162,12 @@ class _StatisticsPageState extends State<StatisticsPage>
                               color: Colors.white.withValues(alpha: 0.15),
                             ),
                           ),
-                          child: DropdownButtonHideUnderline(
-                            child: DropdownButton<String>(
-                              value: selectedPerformerTeam.isNotEmpty ? selectedPerformerTeam : null,
-                              icon: const Icon(
-                                Icons.arrow_drop_down,
-                                color: Color(0xFFFFD93D),
-                                size: 16,
-                              ),
-                              style: poppins(
-                                color: Colors.white,
-                                fontSize: 10.0,
-                                fontWeight: FontWeight.w600,
-                              ),
-                              dropdownColor: const Color(0xFF1A2B4A),
-                              alignment: Alignment.centerLeft,
-                              isDense: true,
-                              items: performerTeams.map((t) {
-                                return DropdownMenuItem<String>(
-                                  value: t,
-                                  child: Text('$t Team'),
-                                );
-                              }).toList(),
-                              onChanged: (val) {
-                                if (val != null) {
-                                  setState(() {
-                                    _cardSelectedTeams[u['email']] = val;
-                                  });
-                                }
-                              },
+                          child: Text(
+                            (u['team'] as String? ?? '').isNotEmpty ? (u['team'] as String) : 'N/A',
+                            style: poppins(
+                              color: Colors.white,
+                              fontSize: 10.0,
+                              fontWeight: FontWeight.w600,
                             ),
                           ),
                         ),
@@ -958,39 +1194,19 @@ class _StatisticsPageState extends State<StatisticsPage>
     double maxSec,
     dynamic poppins,
   ) {
-    final List<String> userTeams = (u['team'] as String? ?? '')
-        .split(',')
-        .map((t) => t.trim())
-        .where((t) => t.isNotEmpty)
-        .toList();
-    final selectedTeam = _cardSelectedTeams[u['email']] ?? (userTeams.isNotEmpty ? userTeams.first : '');
-    final Map<String, dynamic>? teamStatsMap = u['team_stats'] != null ? Map<String, dynamic>.from(u['team_stats']) : null;
-    final Map<String, dynamic>? selectedStats = (teamStatsMap != null && selectedTeam.isNotEmpty)
-        ? teamStatsMap[selectedTeam] != null ? Map<String, dynamic>.from(teamStatsMap[selectedTeam]) : null
-        : null;
 
-    final totalSec = selectedStats != null
-        ? selectedStats['total_seconds'] as int? ?? 0
-        : u['total_seconds'] as int? ?? 0;
-    final weekSec = selectedStats != null
-        ? selectedStats['week_seconds'] as int? ?? 0
-        : u['week_seconds'] as int? ?? 0;
+    // Always use global totals — team dropdown removed, no per-team split needed
+    final totalSec = u['total_seconds'] as int? ?? 0;
+    final weekSec = u['week_seconds'] as int? ?? 0;
     final loginCount = u['login_count'] as int? ?? 0;
-    final attPct = selectedStats != null
-        ? (selectedStats['attendance_pct'] as num? ?? 0.0).toDouble()
-        : (u['attendance_pct'] as num? ?? 100.0).toDouble();
-    final sessions = selectedStats != null
-        ? selectedStats['total_sessions'] as int? ?? 0
-        : u['total_sessions'] as int? ?? 0;
-    final attPresent = selectedStats != null
-        ? selectedStats['attendance_present'] as int? ?? 0
-        : u['attendance_present'] as int? ?? 0;
-    final attTotal = selectedStats != null
-        ? selectedStats['attendance_total'] as int? ?? 0
-        : u['attendance_total'] as int? ?? 0;
+    final sessions = u['total_sessions'] as int? ?? 0;
+
+    final attPct = (u['attendance_pct'] as num? ?? 0.0).toDouble();
+    final attPresent = u['attendance_present'] as int? ?? 0;
+    final attTotal = u['attendance_total'] as int? ?? 0;
+    final attRatio = attPct / 100.0;
 
     final barRatio = maxSec > 0 ? (totalSec / maxSec).clamp(0.0, 1.0) : 0.0;
-    final attRatio = attPct / 100.0;
 
     final rankColors = [
       const Color(0xFFFFD93D),
@@ -1068,6 +1284,15 @@ class _StatisticsPageState extends State<StatisticsPage>
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
+                            u['name'] as String? ?? 'N/A',
+                            style: poppins(
+                              color: Colors.white,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13.0,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
                             'Roll: ${u['roll_number'] ?? ''}',
                             style: poppins(
                               color: Colors.white54,
@@ -1076,8 +1301,7 @@ class _StatisticsPageState extends State<StatisticsPage>
                           ),
                           const SizedBox(height: 4),
                           Container(
-                            height: 24,
-                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                             decoration: BoxDecoration(
                               color: const Color(0xFF1A2B4A),
                               borderRadius: BorderRadius.circular(6),
@@ -1085,35 +1309,12 @@ class _StatisticsPageState extends State<StatisticsPage>
                                 color: Colors.white.withValues(alpha: 0.15),
                               ),
                             ),
-                            child: DropdownButtonHideUnderline(
-                              child: DropdownButton<String>(
-                                value: selectedTeam.isNotEmpty ? selectedTeam : null,
-                                icon: const Icon(
-                                  Icons.arrow_drop_down,
-                                  color: Color(0xFF4DA6FF),
-                                  size: 16,
-                                ),
-                                style: poppins(
-                                  color: Colors.white,
-                                  fontSize: 10.0,
-                                  fontWeight: FontWeight.w600,
-                                ),
-                                dropdownColor: const Color(0xFF1A2B4A),
-                                alignment: Alignment.centerLeft,
-                                isDense: true,
-                                items: userTeams.map((t) {
-                                  return DropdownMenuItem<String>(
-                                    value: t,
-                                    child: Text('$t Team'),
-                                  );
-                                }).toList(),
-                                onChanged: (val) {
-                                  if (val != null) {
-                                    setState(() {
-                                      _cardSelectedTeams[u['email']] = val;
-                                    });
-                                  }
-                                },
+                            child: Text(
+                              (u['team'] as String? ?? '').isNotEmpty ? (u['team'] as String) : 'N/A',
+                              style: poppins(
+                                color: Colors.white,
+                                fontSize: 10.0,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ),
@@ -1144,61 +1345,87 @@ class _StatisticsPageState extends State<StatisticsPage>
                 ),
                 const SizedBox(height: 10),
 
-                // Work hours bar
-                _buildStatBar(
-                  'Work Hours',
-                  _fmtSeconds(totalSec),
-                  barRatio * _anim.value,
-                  const Color(0xFF4DA6FF),
-                  poppins,
-                ),
-                const SizedBox(height: 6),
-                // Attendance bar
-                Builder(
-                  builder: (context) {
-                    final int attOnDuty = u['attendance_on_duty'] as int? ?? 0;
-                    final String displayStats = attOnDuty > 0
-                        ? '$attPresent/$attTotal | $attOnDuty OD'
-                        : '$attPresent/$attTotal';
-                    return _buildStatBar(
-                      'Attendance',
-                      '${attPct.toStringAsFixed(1)}% ($displayStats)',
-                      attRatio * _anim.value,
-                      attPct >= 75
-                          ? const Color(0xFF00C48C)
-                          : const Color(0xFFFF6B6B),
-                      poppins,
-                    );
-                  },
-                ),
-
-                const SizedBox(height: 10),
-
-                // Stat chips
-                Row(
-                  children: [
-                    _chip(
-                      '$sessions',
-                      'Sessions',
-                      const Color(0xFF9B59B6),
-                      poppins,
-                    ),
-                    const SizedBox(width: 6),
-                    _chip(
-                      '$loginCount',
-                      'Logins',
-                      const Color(0xFFFFD93D),
-                      poppins,
-                    ),
-                    const SizedBox(width: 6),
-                    _chip(
-                      _fmtSeconds(weekSec),
-                      'This Week',
-                      const Color(0xFF00C48C),
-                      poppins,
-                    ),
-                  ],
-                ),
+                if (_activeTab == 'logs') ...[
+                  // Work hours bar
+                  _buildStatBar(
+                    'Work Hours',
+                    _fmtSeconds(totalSec),
+                    barRatio * _anim.value,
+                    const Color(0xFF4DA6FF),
+                    poppins,
+                  ),
+                  const SizedBox(height: 10),
+                  // Stat chips
+                  Row(
+                    children: [
+                      _chip(
+                        '$sessions',
+                        'Sessions',
+                        const Color(0xFF9B59B6),
+                        poppins,
+                      ),
+                      const SizedBox(width: 6),
+                      _chip(
+                        '$loginCount',
+                        'Logins',
+                        const Color(0xFFFFD93D),
+                        poppins,
+                      ),
+                      const SizedBox(width: 6),
+                      _chip(
+                        _fmtSeconds(weekSec),
+                        'This Week',
+                        const Color(0xFF00C48C),
+                        poppins,
+                      ),
+                    ],
+                  ),
+                ] else ...[
+                  // Attendance bar
+                  Builder(
+                    builder: (context) {
+                      final int attOnDuty = u['attendance_on_duty'] as int? ?? 0;
+                      final String displayStats = attOnDuty > 0
+                          ? '$attPresent/$attTotal | $attOnDuty OD'
+                          : '$attPresent/$attTotal';
+                      return _buildStatBar(
+                        'Attendance',
+                        '${attPct.toStringAsFixed(1)}% ($displayStats)',
+                        attRatio * _anim.value,
+                        attPct >= 75
+                            ? const Color(0xFF00C48C)
+                            : const Color(0xFFFF6B6B),
+                        poppins,
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 10),
+                  // Stat chips for attendance details
+                  Row(
+                    children: [
+                      _chip(
+                        '$attPresent',
+                        'Present',
+                        const Color(0xFF00C48C),
+                        poppins,
+                      ),
+                      const SizedBox(width: 6),
+                      _chip(
+                        '$attTotal',
+                        'Total Days',
+                        const Color(0xFF4DA6FF),
+                        poppins,
+                      ),
+                      const SizedBox(width: 6),
+                      _chip(
+                        '${u['attendance_on_duty'] as int? ?? 0}',
+                        'On Duty',
+                        const Color(0xFFFFD93D),
+                        poppins,
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),

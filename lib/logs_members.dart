@@ -107,6 +107,84 @@ class _LogsMembersPageState extends State<LogsMembersPage>
     }
   }
 
+  bool _isPointInPolygon(latlong.LatLng point, List<latlong.LatLng> polygon) {
+    if (polygon.length < 3) return true;
+    bool isInside = false;
+    int j = polygon.length - 1;
+
+    for (int i = 0; i < polygon.length; i++) {
+      final xi = polygon[i].latitude;
+      final yi = polygon[i].longitude;
+      final xj = polygon[j].latitude;
+      final yj = polygon[j].longitude;
+
+      final intersect = ((yi > point.longitude) != (yj > point.longitude)) &&
+          (point.latitude < (xj - xi) * (point.longitude - yi) / (yj - yi) + xi);
+
+      if (intersect) isInside = !isInside;
+      j = i;
+    }
+    return isInside;
+  }
+
+  double _getDistanceToPolygon(latlong.LatLng pt, List<latlong.LatLng> polygon) {
+    if (polygon.isEmpty) return 0.0;
+    double minDistance = double.infinity;
+    const latlong.Distance distance = latlong.Distance();
+
+    for (int i = 0; i < polygon.length; i++) {
+      final p1 = polygon[i];
+      final p2 = polygon[(i + 1) % polygon.length];
+      final d = _getDistanceToSegment(pt, p1, p2, distance);
+      if (d < minDistance) {
+        minDistance = d;
+      }
+    }
+    return minDistance;
+  }
+
+  double _getDistanceToSegment(latlong.LatLng p, latlong.LatLng a, latlong.LatLng b, latlong.Distance distance) {
+    final double l2 = _distSq(a, b);
+    if (l2 == 0) return distance.as(latlong.LengthUnit.Meter, p, a);
+    double t = ((p.latitude - a.latitude) * (b.latitude - a.latitude) +
+                (p.longitude - a.longitude) * (b.longitude - a.longitude)) / l2;
+    t = t.clamp(0.0, 1.0);
+    final latlong.LatLng projection = latlong.LatLng(
+      a.latitude + t * (b.latitude - a.latitude),
+      a.longitude + t * (b.longitude - a.longitude),
+    );
+    return distance.as(latlong.LengthUnit.Meter, p, projection);
+  }
+
+  double _distSq(latlong.LatLng a, latlong.LatLng b) {
+    final dLat = a.latitude - b.latitude;
+    final dLng = a.longitude - b.longitude;
+    return dLat * dLat + dLng * dLng;
+  }
+
+  bool _checkGeofenceStatus(Position pos) {
+    if (_geofencePoints.isEmpty) return true;
+    final pt = latlong.LatLng(pos.latitude, pos.longitude);
+    final isInsideRaw = _isPointInPolygon(pt, _geofencePoints);
+    if (isInsideRaw) return true;
+
+    final accuracyBuffer = pos.accuracy.clamp(5.0, 15.0);
+    final dist = _getDistanceToPolygon(pt, _geofencePoints);
+    return dist <= accuracyBuffer;
+  }
+
+  void _checkLocalGeofence(Position pos) {
+    if (!_isWorking) return;
+    final bool isInside = _checkGeofenceStatus(pos);
+    if (!isInside && !_isPaused) {
+      setState(() => _isPaused = true);
+      _showSnack('Work Session Paused: You went outside the coordinates.', type: ToastType.warning);
+    } else if (isInside && _isPaused) {
+      setState(() => _isPaused = false);
+      _showSnack('Work Session Resumed: You returned inside the coordinates.', type: ToastType.success);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -150,8 +228,9 @@ class _LogsMembersPageState extends State<LogsMembersPage>
               _currentPosition = pos;
               _lastPos = pos;
             });
-            // If session is active, immediately post high accuracy coordinate update
+            // If session is active, check geofence locally & post stream location update
             if (_isWorking) {
+              _checkLocalGeofence(pos);
               _postStreamLocation(pos);
             }
             try {
@@ -577,12 +656,36 @@ class _LogsMembersPageState extends State<LogsMembersPage>
     final u = widget.userData;
     if (u == null) return;
     try {
+      // Validate attendance status for today
+      final statusRes = await http.get(
+        Uri.parse('$apiBaseUrl/api/attendance/today-status?email=${Uri.encodeComponent(u.email)}'),
+      ).timeout(const Duration(seconds: 10));
+
+      if (statusRes.statusCode == 200) {
+        final statusData = jsonDecode(statusRes.body);
+        if (statusData['allowed'] != true) {
+          final String msg = statusData['message'] ?? 'Attendance validation failed.';
+          _showSnack(msg, type: ToastType.error);
+          return;
+        }
+      } else {
+        _showSnack('Attendance validation failed. Server error.', type: ToastType.error);
+        return;
+      }
+
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
       }
       if (permission == LocationPermission.denied || permission == LocationPermission.deniedForever) {
         _showSnack('Location permission is required to start a work session.');
+        return;
+      }
+
+      final currentPos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.best);
+      _currentPosition = currentPos;
+      if (!_checkGeofenceStatus(currentPos)) {
+        _showSnack('You must be inside the SEDS Lab fence area to start a work session.', type: ToastType.error);
         return;
       }
 

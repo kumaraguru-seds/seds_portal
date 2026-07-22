@@ -8,7 +8,8 @@ import 'app_toast.dart';
 
 class AttendanceTab extends StatefulWidget {
   final UserData? userData;
-  const AttendanceTab({super.key, this.userData});
+  final String? forceTeam;
+  const AttendanceTab({super.key, this.userData, this.forceTeam});
 
   @override
   State<AttendanceTab> createState() => _AttendanceTabState();
@@ -42,7 +43,11 @@ class _AttendanceTabState extends State<AttendanceTab> {
   void initState() {
     super.initState();
     final bool isAdmin = widget.userData?.role == 'Admin' || widget.userData?.role == 'SuperAdmin';
-    if (isAdmin) {
+    if (widget.forceTeam != null) {
+      _myTeams = [widget.forceTeam!];
+      _selectedTeam = widget.forceTeam!;
+      _fetchData();
+    } else if (isAdmin) {
       _loadAdminTeams();
     } else {
       final teams = widget.userData?.teams ?? [];

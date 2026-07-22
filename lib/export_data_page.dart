@@ -49,7 +49,7 @@ class _ExportDataPageState extends State<ExportDataPage> {
   dynamic _selectedSpecificMember; // The chosen specific user object
   String _memberSearchQuery = '';
 
-  final List<String> _topics = ['Work Logs', 'Attendance', 'Both'];
+  final List<String> _topics = ['Work Logs', 'Attendance', 'Both', 'Actions Needed'];
   final List<String> _formats = ['PDF', 'CSV', 'Excel'];
   
   // Constant teams list from main.dart or standard (default fallbacks)
@@ -285,30 +285,47 @@ class _ExportDataPageState extends State<ExportDataPage> {
       // 2. Fetch required logs & attendance
       final List<Map<String, dynamic>> finalLogs = [];
       final List<Map<String, dynamic>> finalAttendance = [];
+      final List<Map<String, dynamic>> finalActionsNeeded = [];
       String reportScopeText = '';
 
-      if (widget.userData.role == 'Member' || _selectedScope == 'Self') {
-        reportScopeText = 'Personal: ${widget.userData.name} (${widget.userData.rollNumber})';
-        await _fetchMemberData(widget.userData.email, widget.userData.rollNumber, widget.userData.team ?? '', finalLogs, finalAttendance);
-      } 
-      else if (_selectedScope == 'Specific Member') {
-        if (_selectedSpecificMember == null) {
-          AppToast.warning(context, 'Please select a specific team member to export.');
-          setState(() => _isExporting = false);
-          return;
+      // If Actions Needed, fetch deficits directly and skip member/team fetch
+      if (_selectedTopic == 'Actions Needed') {
+        reportScopeText = 'All Members - Actions Needed Report';
+        setState(() {
+          _exportProgress = 0.3;
+          _exportStatusText = 'Fetching Actions Needed data...';
+        });
+        final defRes = await http.get(Uri.parse('\$apiBaseUrl/api/logs/deficits'));
+        if (defRes.statusCode == 200) {
+          final data = jsonDecode(defRes.body);
+          final List<dynamic> defs = data['deficits'] ?? [];
+          for (final d in defs) {
+            finalActionsNeeded.add(Map<String, dynamic>.from(d));
+          }
         }
-        final targetEmail = _selectedSpecificMember['email'] ?? '';
-        final targetRoll = _selectedSpecificMember['roll_number'] ?? '';
-        final targetTeam = _selectedSpecificMember['team'] ?? '';
-        final targetName = _selectedSpecificMember['name'] ?? '';
-        reportScopeText = 'Member: $targetName ($targetRoll)';
-        await _fetchMemberData(targetEmail, targetRoll, targetTeam, finalLogs, finalAttendance);
-      } 
-      else if (_selectedScope == 'Team') {
-        final targetTeam = widget.userData.role == 'Admin' ? _selectedTeamFilter! : widget.userData.team!;
-        reportScopeText = 'Team: $targetTeam';
-        await _fetchTeamData(targetTeam, finalLogs, finalAttendance);
+      } else {
+        if (widget.userData.role == 'Member' || _selectedScope == 'Self') {
+          reportScopeText = 'Personal: ${widget.userData.name} (${widget.userData.rollNumber})';
+          await _fetchMemberData(widget.userData.email, widget.userData.rollNumber, widget.userData.team ?? '', finalLogs, finalAttendance);
+        } else if (_selectedScope == 'Specific Member') {
+          if (_selectedSpecificMember == null) {
+            AppToast.warning(context, 'Please select a specific team member to export.');
+            setState(() => _isExporting = false);
+            return;
+          }
+          final targetEmail = _selectedSpecificMember['email'] ?? '';
+          final targetRoll = _selectedSpecificMember['roll_number'] ?? '';
+          final targetTeam = _selectedSpecificMember['team'] ?? '';
+          final targetName = _selectedSpecificMember['name'] ?? '';
+          reportScopeText = 'Member: $targetName ($targetRoll)';
+          await _fetchMemberData(targetEmail, targetRoll, targetTeam, finalLogs, finalAttendance);
+        } else if (_selectedScope == 'Team') {
+          final targetTeam = widget.userData.role == 'Admin' ? _selectedTeamFilter! : widget.userData.team!;
+          reportScopeText = 'Team: $targetTeam';
+          await _fetchTeamData(targetTeam, finalLogs, finalAttendance);
+        }
       }
+
 
       setState(() {
         _exportProgress = 0.5;
@@ -316,7 +333,7 @@ class _ExportDataPageState extends State<ExportDataPage> {
       });
 
       // 3. Compile output file
-      if (finalLogs.isEmpty && finalAttendance.isEmpty) {
+      if (finalLogs.isEmpty && finalAttendance.isEmpty && finalActionsNeeded.isEmpty) {
         if (mounted) AppToast.warning(context, 'No matching records found for this selection.');
         setState(() => _isExporting = false);
         return;
@@ -335,13 +352,13 @@ class _ExportDataPageState extends State<ExportDataPage> {
       String savedPath = '';
 
       if (_selectedFormat == 'CSV') {
-        final csvString = _generateCSV(finalLogs, finalAttendance);
+        final csvString = _generateCSV(finalLogs, finalAttendance, finalActionsNeeded);
         savedPath = await _saveStringToFile(csvString, '$filename.csv');
       } else if (_selectedFormat == 'Excel') {
-        final excelBytes = _generateExcel(finalLogs, finalAttendance);
+        final excelBytes = _generateExcel(finalLogs, finalAttendance, finalActionsNeeded);
         savedPath = await _saveBytesToFile(excelBytes, '$filename.xlsx');
       } else if (_selectedFormat == 'PDF') {
-        final pdfBytes = await _generatePDF(finalLogs, finalAttendance, reportScopeText);
+        final pdfBytes = await _generatePDF(finalLogs, finalAttendance, finalActionsNeeded, reportScopeText);
         savedPath = await _saveBytesToFile(pdfBytes, '$filename.pdf');
       }
 
@@ -480,7 +497,7 @@ class _ExportDataPageState extends State<ExportDataPage> {
   // File formats generation helpers
   // ─────────────────────────────────────────────────────────────────────────────
 
-  String _generateCSV(List<Map<String, dynamic>> logs, List<Map<String, dynamic>> att) {
+  String _generateCSV(List<Map<String, dynamic>> logs, List<Map<String, dynamic>> att, List<Map<String, dynamic>> actionsNeeded) {
     final List<List<dynamic>> csvRows = [];
     
     // Header block
@@ -532,10 +549,33 @@ class _ExportDataPageState extends State<ExportDataPage> {
       }
     }
 
+    if (_selectedTopic == 'Actions Needed') {
+      csvRows.add(['--- ACTIONS NEEDED (CRITICAL DEFICITS) ---']);
+      csvRows.add(['Roll No', 'Name', 'Team', 'Role', 'Worked (h)', 'Target (h)', 'Hours Deficit?', 'Latest Absent Date', 'Absent Team']);
+      for (final d in actionsNeeded) {
+        final workedH = ((d['weekly_seconds'] ?? 0) / 3600).toStringAsFixed(1);
+        final targetH = ((d['target_seconds'] ?? 0) / 3600).toStringAsFixed(0);
+        final absentInfo = d['latest_absent'];
+        final absentDate = absentInfo != null ? (absentInfo['date'] ?? '') : '';
+        final absentTeam = absentInfo != null ? (absentInfo['team'] ?? '') : '';
+        csvRows.add([
+          d['roll_number'] ?? '',
+          d['name'] ?? '',
+          d['team'] ?? '',
+          d['role'] ?? '',
+          workedH,
+          targetH,
+          d['has_hours_deficit'] == true ? 'YES' : 'NO',
+          absentDate,
+          absentTeam,
+        ]);
+      }
+    }
+
     return const ListToCsvConverter().convert(csvRows);
   }
 
-  Uint8List _generateExcel(List<Map<String, dynamic>> logs, List<Map<String, dynamic>> att) {
+  Uint8List _generateExcel(List<Map<String, dynamic>> logs, List<Map<String, dynamic>> att, List<Map<String, dynamic>> actionsNeeded) {
     final excel = ex.Excel.createExcel();
     
     // Clear default sheet
@@ -622,6 +662,42 @@ class _ExportDataPageState extends State<ExportDataPage> {
       excel.delete('Attendance Reports');
     }
 
+    if (_selectedTopic == 'Actions Needed') {
+      excel.delete('Attendance Reports');
+      final sheet = excel['Actions Needed'];
+      sheet.appendRow([ex.TextCellValue('SEDS PORTAL - ACTIONS NEEDED (CRITICAL DEFICITS)')]);
+      sheet.appendRow([ex.TextCellValue('Exporter'), ex.TextCellValue(widget.userData.name)]);
+      sheet.appendRow([ex.TextCellValue('Exported At'), ex.TextCellValue(DateFormat('dd/MM/yyyy HH:mm:ss').format(DateTime.now()))]);
+      sheet.appendRow([]);
+      sheet.appendRow([
+        ex.TextCellValue('Roll No'),
+        ex.TextCellValue('Name'),
+        ex.TextCellValue('Team(s)'),
+        ex.TextCellValue('Role'),
+        ex.TextCellValue('Worked (h)'),
+        ex.TextCellValue('Target (h)'),
+        ex.TextCellValue('Hours Deficit'),
+        ex.TextCellValue('Latest Absent Date'),
+        ex.TextCellValue('Absent Team'),
+      ]);
+      for (final d in actionsNeeded) {
+        final workedH = ((d['weekly_seconds'] ?? 0) / 3600).toStringAsFixed(1);
+        final targetH = ((d['target_seconds'] ?? 0) / 3600).toStringAsFixed(0);
+        final absentInfo = d['latest_absent'];
+        sheet.appendRow([
+          ex.TextCellValue(d['roll_number'] ?? ''),
+          ex.TextCellValue(d['name'] ?? ''),
+          ex.TextCellValue(d['team'] ?? ''),
+          ex.TextCellValue(d['role'] ?? ''),
+          ex.TextCellValue(workedH),
+          ex.TextCellValue(targetH),
+          ex.TextCellValue(d['has_hours_deficit'] == true ? 'YES' : 'NO'),
+          ex.TextCellValue(absentInfo != null ? (absentInfo['date'] ?? '') : ''),
+          ex.TextCellValue(absentInfo != null ? (absentInfo['team'] ?? '') : ''),
+        ]);
+      }
+    }
+
     final bytes = excel.save();
     return Uint8List.fromList(bytes ?? []);
   }
@@ -629,6 +705,7 @@ class _ExportDataPageState extends State<ExportDataPage> {
   Future<Uint8List> _generatePDF(
     List<Map<String, dynamic>> logs,
     List<Map<String, dynamic>> att,
+    List<Map<String, dynamic>> actionsNeeded,
     String reportScopeText,
   ) async {
     final pdf = pw.Document();
@@ -648,7 +725,9 @@ class _ExportDataPageState extends State<ExportDataPage> {
 
     final String reportTopicTitle = _selectedTopic == 'Both' 
         ? 'Logs & Attendance Report' 
-        : (_selectedTopic == 'Work Logs' ? 'Work Sessions logs' : 'Attendance Report');
+        : (_selectedTopic == 'Work Logs' ? 'Work Sessions Logs' 
+          : (_selectedTopic == 'Attendance' ? 'Attendance Report'
+            : 'Actions Needed — Critical Deficits'));
 
     // Build reusable header block
     pw.Widget buildPageHeader(pw.Context context) {
@@ -818,6 +897,69 @@ class _ExportDataPageState extends State<ExportDataPage> {
                   3: const pw.FixedColumnWidth(70),
                   4: const pw.FixedColumnWidth(70),
                   5: const pw.FlexColumnWidth(),
+                },
+              ),
+            ],
+          ),
+        );
+      }
+    }
+
+    // ──────────────── ACTIONS NEEDED PDF GENERATION ────────────────
+    if (_selectedTopic == 'Actions Needed') {
+      const int defPerPage = 15;
+      final chunks = <List<Map<String, dynamic>>>[];
+      for (int i = 0; i < actionsNeeded.length; i += defPerPage) {
+        chunks.add(actionsNeeded.sublist(i, i + defPerPage > actionsNeeded.length ? actionsNeeded.length : i + defPerPage));
+      }
+      if (chunks.isEmpty) chunks.add([]);
+      for (int c = 0; c < chunks.length; c++) {
+        pdf.addPage(
+          pw.MultiPage(
+            pageFormat: PdfPageFormat.a4.landscape,
+            header: buildPageHeader,
+            footer: buildPageFooter,
+            build: (pw.Context context) => [
+              pw.Header(
+                level: 0,
+                child: pw.Text(
+                  'Actions Needed — Critical Deficits (Part ${c + 1})',
+                  style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold, color: PdfColors.red800),
+                ),
+              ),
+              pw.SizedBox(height: 6),
+              pw.TableHelper.fromTextArray(
+                border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+                headers: ['Roll No', 'Name', 'Team(s)', 'Role', 'Worked (h)', 'Target (h)', 'Hours Deficit', 'Absent Date', 'Absent Team'],
+                data: chunks[c].map((d) {
+                  final workedH = ((d['weekly_seconds'] ?? 0) / 3600).toStringAsFixed(1);
+                  final targetH = ((d['target_seconds'] ?? 0) / 3600).toStringAsFixed(0);
+                  final absentInfo = d['latest_absent'];
+                  return [
+                    d['roll_number'] ?? '',
+                    d['name'] ?? '',
+                    d['team'] ?? '',
+                    d['role'] ?? '',
+                    workedH,
+                    targetH,
+                    d['has_hours_deficit'] == true ? 'YES' : 'NO',
+                    absentInfo != null ? (absentInfo['date'] ?? '') : '-',
+                    absentInfo != null ? (absentInfo['team'] ?? '') : '-',
+                  ];
+                }).toList(),
+                headerStyle: pw.TextStyle(fontWeight: pw.FontWeight.bold, fontSize: 8, color: PdfColors.white),
+                headerDecoration: pw.BoxDecoration(color: PdfColors.red700),
+                cellStyle: pw.TextStyle(fontSize: 7.5),
+                columnWidths: {
+                  0: const pw.FixedColumnWidth(55),
+                  1: const pw.FixedColumnWidth(80),
+                  2: const pw.FixedColumnWidth(80),
+                  3: const pw.FixedColumnWidth(45),
+                  4: const pw.FixedColumnWidth(45),
+                  5: const pw.FixedColumnWidth(45),
+                  6: const pw.FixedColumnWidth(55),
+                  7: const pw.FixedColumnWidth(55),
+                  8: const pw.FlexColumnWidth(),
                 },
               ),
             ],
