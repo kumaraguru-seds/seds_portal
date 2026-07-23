@@ -10,16 +10,15 @@ class DeveloperSupportPage extends StatelessWidget {
   Future<void> _launchUrl(BuildContext context, String urlString) async {
     final uri = Uri.parse(urlString);
     try {
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      } else {
+      final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!launched) {
         if (context.mounted) {
           AppToast.error(context, 'Could not launch link.');
         }
       }
     } catch (e) {
       if (context.mounted) {
-        AppToast.error(context, 'Error launching: $e');
+        AppToast.error(context, 'Error launching link. App might be missing.');
       }
     }
   }

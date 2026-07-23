@@ -29,6 +29,7 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
   int _totalRows = 0;
   int _currentPage = 1;
   final int _rowsLimit = 50;
+  int? _selectedRowIndex; // Track selected/touched row index for glowing highlight
 
   // Zoom & fullscreen state
   final TransformationController _transformCtrl = TransformationController();
@@ -41,6 +42,10 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
   // Search
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocusNode = FocusNode();
+
+  // Scrollbar controllers
+  final ScrollController _verticalScrollCtrl = ScrollController();
+  final ScrollController _horizontalScrollCtrl = ScrollController();
 
   @override
   void initState() {
@@ -55,6 +60,8 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
     _transformCtrl.dispose();
     _searchController.dispose();
     _searchFocusNode.dispose();
+    _verticalScrollCtrl.dispose();
+    _horizontalScrollCtrl.dispose();
     super.dispose();
   }
 
@@ -87,6 +94,27 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
     setState(() => _currentScale = newScale);
   }
 
+  // ── Detect primary key column from loaded columns ─────────────
+  String _detectPrimaryKey() {
+    // Prefer 'id' column, then first column with 'integer' or 'serial' type
+    for (final col in _columns) {
+      if (col['column_name']?.toString().toLowerCase() == 'id') {
+        return col['column_name'].toString();
+      }
+    }
+    // Fallback to first integer column
+    for (final col in _columns) {
+      final dt = col['data_type']?.toString().toLowerCase() ?? '';
+      if (dt.contains('int') || dt.contains('serial')) {
+        return col['column_name'].toString();
+      }
+    }
+    // Last resort: first column
+    if (_columns.isNotEmpty) return _columns.first['column_name'].toString();
+    return 'id';
+  }
+
+  // ── Fetch metadata ──────────────────────────────────────────────
   Future<void> _fetchMetadata() async {
     setState(() => _isLoadingMeta = true);
     try {
@@ -121,6 +149,7 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
     }
   }
 
+  // ── Execute query ───────────────────────────────────────────────
   Future<void> _executeQuery({bool resetPage = true}) async {
     if (_selectedDb == null || _selectedTable == null) return;
     if (resetPage) _currentPage = 1;
@@ -144,6 +173,7 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
             _columns = data['columns'] ?? [];
             _rows = data['rows'] ?? [];
             _totalRows = data['total'] ?? 0;
+            _selectedRowIndex = null;
           });
         } else {
           if (mounted) AppToast.error(context, data['message'] ?? 'Query execution failed.');
@@ -157,6 +187,397 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
     } finally {
       if (mounted) setState(() => _isLoadingQuery = false);
     }
+  }
+
+  // ── Add Row API call ─────────────────────────────────────────────
+  Future<void> _addRow(Map<String, String> data) async {
+    if (_selectedDb == null || _selectedTable == null) return;
+    try {
+      final res = await http.post(
+        Uri.parse('$apiBaseUrl/api/admin/databases/row/add'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'database': _selectedDb,
+          'table': _selectedTable,
+          'data': _normalizeRowData(data),
+        }),
+      );
+      final body = jsonDecode(res.body);
+      if (res.statusCode == 200 && body['success'] == true) {
+        if (mounted) AppToast.success(context, body['message'] ?? 'Row added!');
+        _executeQuery(resetPage: false);
+      } else {
+        if (mounted) AppToast.error(context, body['message'] ?? 'Failed to add row.');
+      }
+    } catch (e) {
+      if (mounted) AppToast.error(context, 'Network error adding row.');
+    }
+  }
+
+  // ── Update Row API call ──────────────────────────────────────────
+  Future<void> _updateRow(String pkCol, dynamic pkVal, Map<String, String> data) async {
+    if (_selectedDb == null || _selectedTable == null) return;
+    try {
+      final res = await http.put(
+        Uri.parse('$apiBaseUrl/api/admin/databases/row/update'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'database': _selectedDb,
+          'table': _selectedTable,
+          'primaryKey': pkCol,
+          'primaryKeyValue': pkVal,
+          'data': _normalizeRowData(data),
+        }),
+      );
+      final body = jsonDecode(res.body);
+      if (res.statusCode == 200 && body['success'] == true) {
+        if (mounted) AppToast.success(context, body['message'] ?? 'Row updated!');
+        _executeQuery(resetPage: false);
+      } else {
+        if (mounted) AppToast.error(context, body['message'] ?? 'Failed to update row.');
+      }
+    } catch (e) {
+      if (mounted) AppToast.error(context, 'Network error updating row.');
+    }
+  }
+
+  // ── Delete Row API call ──────────────────────────────────────────
+  Future<void> _deleteRow(String pkCol, dynamic pkVal) async {
+    if (_selectedDb == null || _selectedTable == null) return;
+    try {
+      final req = http.Request('DELETE', Uri.parse('$apiBaseUrl/api/admin/databases/row/delete'));
+      req.headers['Content-Type'] = 'application/json';
+      req.body = jsonEncode({
+        'database': _selectedDb,
+        'table': _selectedTable,
+        'primaryKey': pkCol,
+        'primaryKeyValue': pkVal,
+      });
+      final streamed = await req.send();
+      final resBody = await streamed.stream.bytesToString();
+      final body = jsonDecode(resBody);
+      if (streamed.statusCode == 200 && body['success'] == true) {
+        if (mounted) AppToast.success(context, body['message'] ?? 'Row deleted!');
+        _executeQuery(resetPage: false);
+      } else {
+        if (mounted) AppToast.error(context, body['message'] ?? 'Failed to delete row.');
+      }
+    } catch (e) {
+      if (mounted) AppToast.error(context, 'Network error deleting row.');
+    }
+  }
+
+  // ── Show Add Row Dialog ──────────────────────────────────────────
+  void _showAddRowDialog() {
+    if (_columns.isEmpty) {
+      AppToast.error(context, 'No columns loaded. Select a table first.');
+      return;
+    }
+
+    final poppins = GoogleFonts.poppins;
+    final controllers = <String, TextEditingController>{};
+    // Skip auto-increment columns (typically 'id' with serial/int type)
+    final editableCols = _columns.where((col) {
+      final name = col['column_name']?.toString().toLowerCase() ?? '';
+      final dtype = col['data_type']?.toString().toLowerCase() ?? '';
+      // Skip 'id' if it's integer/serial (likely auto-increment)
+      if (name == 'id' && (dtype.contains('int') || dtype.contains('serial'))) return false;
+      return true;
+    }).toList();
+
+    for (final col in editableCols) {
+      controllers[col['column_name'].toString()] = TextEditingController();
+    }
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Container(
+          height: MediaQuery.of(ctx).size.height * 0.8,
+          decoration: const BoxDecoration(
+            color: Color(0xFF0D1E3A),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            children: [
+              // Handle bar
+              const SizedBox(height: 12),
+              Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))),
+              const SizedBox(height: 16),
+              Text('Add New Row', style: poppins(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+              Text('$_selectedDb → $_selectedTable', style: poppins(fontSize: 12, color: Colors.white38)),
+              const SizedBox(height: 16),
+              Expanded(
+                child: ListView.builder(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  itemCount: editableCols.length,
+                  itemBuilder: (context, index) {
+                    final col = editableCols[index];
+                    final colName = col['column_name'].toString();
+                    final colType = col['data_type']?.toString() ?? '';
+                    final isDate = colType.contains('timestamp') || colType.contains('date') || colType.contains('time') || colName.contains('time') || colName.contains('date') || colName.contains('_at');
+                    final hintText = isDate ? 'yyyy-MM-dd HH:mm:ss (e.g. 2026-07-22 03:42:08)' : colType;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: TextField(
+                        controller: controllers[colName],
+                        style: poppins(color: Colors.white, fontSize: 13),
+                        decoration: InputDecoration(
+                          labelText: colName,
+                          labelStyle: poppins(color: const Color(0xFF4DA6FF), fontSize: 12, fontWeight: FontWeight.bold),
+                          hintText: hintText,
+                          hintStyle: poppins(color: Colors.white24, fontSize: 11),
+                          filled: true,
+                          fillColor: Colors.white.withValues(alpha: 0.05),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white12)),
+                          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white12)),
+                          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: const BorderSide(color: Color(0xFF4DA6FF))),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white70,
+                          side: const BorderSide(color: Colors.white24),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                        onPressed: () => Navigator.pop(ctx),
+                        child: Text('Cancel', style: poppins(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF00E676),
+                          foregroundColor: Colors.black,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                        onPressed: () {
+                          final data = <String, String>{};
+                          for (final entry in controllers.entries) {
+                            if (entry.value.text.isNotEmpty) {
+                              data[entry.key] = entry.value.text;
+                            }
+                          }
+                          if (data.isEmpty) {
+                            AppToast.error(ctx, 'Fill at least one field.');
+                            return;
+                          }
+                          Navigator.pop(ctx);
+                          _addRow(data);
+                        },
+                        child: Text('Add Row', style: poppins(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ── Show Edit Row Dialog ─────────────────────────────────────────
+  void _showEditRowDialog(Map<String, dynamic> row) {
+    final poppins = GoogleFonts.poppins;
+    final pkCol = _detectPrimaryKey();
+    final pkVal = row[pkCol];
+    final controllers = <String, TextEditingController>{};
+
+    for (final col in _columns) {
+      final colName = col['column_name'].toString();
+      final rawVal = row[colName]?.toString() ?? '';
+      final colType = col['data_type']?.toString().toLowerCase() ?? '';
+
+      String initialText = rawVal;
+      if (rawVal.isNotEmpty &&
+          (colType.contains('timestamp') || colType.contains('date') || colType.contains('time') ||
+           colName.contains('time') || colName.contains('date') || colName.contains('_at') ||
+           rawVal.contains('T') || RegExp(r'^\d{4}[-/]\d{1,2}[-/]\d{1,2}').hasMatch(rawVal))) {
+        initialText = _formatDateTimeDisplay(rawVal);
+      }
+      controllers[colName] = TextEditingController(text: initialText);
+    }
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Container(
+          height: MediaQuery.of(ctx).size.height * 0.85,
+          decoration: const BoxDecoration(
+            color: Color(0xFF0D1E3A),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            children: [
+              const SizedBox(height: 12),
+              Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.white24, borderRadius: BorderRadius.circular(2))),
+              const SizedBox(height: 16),
+              Text('Edit Row', style: poppins(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white)),
+              Text('$pkCol: $pkVal', style: poppins(fontSize: 12, color: const Color(0xFF4DA6FF))),
+              const SizedBox(height: 16),
+              Expanded(
+                child: ListView.builder(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  itemCount: _columns.length,
+                  itemBuilder: (context, index) {
+                    final col = _columns[index];
+                    final colName = col['column_name'].toString();
+                    final colType = col['data_type']?.toString() ?? '';
+                    final isPk = colName == pkCol;
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: TextField(
+                        controller: controllers[colName],
+                        readOnly: isPk,
+                        style: poppins(color: isPk ? Colors.white38 : Colors.white, fontSize: 13),
+                        decoration: InputDecoration(
+                          labelText: '$colName${isPk ? ' (PK — read only)' : ''}',
+                          labelStyle: poppins(color: isPk ? Colors.orangeAccent : const Color(0xFF4DA6FF), fontSize: 12, fontWeight: FontWeight.bold),
+                          hintText: colType,
+                          hintStyle: poppins(color: Colors.white24, fontSize: 11),
+                          filled: true,
+                          fillColor: isPk ? Colors.white.withValues(alpha: 0.02) : Colors.white.withValues(alpha: 0.05),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: Colors.white12)),
+                          enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: isPk ? Colors.orangeAccent.withValues(alpha: 0.3) : Colors.white12)),
+                          focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide(color: isPk ? Colors.orangeAccent : const Color(0xFF4DA6FF))),
+                        ),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.white70,
+                          side: const BorderSide(color: Colors.white24),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                        onPressed: () => Navigator.pop(ctx),
+                        child: Text('Cancel', style: poppins(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF4DA6FF),
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                        ),
+                        onPressed: () {
+                          final data = <String, String>{};
+                          for (final col in _columns) {
+                            final colName = col['column_name'].toString();
+                            if (colName == pkCol) continue; // skip PK
+                            final newVal = controllers[colName]?.text ?? '';
+                            data[colName] = newVal;
+                          }
+                          Navigator.pop(ctx);
+                          _updateRow(pkCol, pkVal, data);
+                        },
+                        child: Text('Save Changes', style: poppins(fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  // ── Show Delete Confirmation Dialog ──────────────────────────────
+  void _showDeleteConfirmDialog(Map<String, dynamic> row) {
+    final poppins = GoogleFonts.poppins;
+    final pkCol = _detectPrimaryKey();
+    final pkVal = row[pkCol];
+
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF0D1E3A),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(
+            children: [
+              const Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 28),
+              const SizedBox(width: 10),
+              Text('Delete Row?', style: poppins(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18)),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('This will permanently remove this row:', style: poppins(color: Colors.white70, fontSize: 13)),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.redAccent.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.redAccent.withValues(alpha: 0.3)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Database: $_selectedDb', style: poppins(color: Colors.white54, fontSize: 11)),
+                    Text('Table: $_selectedTable', style: poppins(color: Colors.white54, fontSize: 11)),
+                    const SizedBox(height: 4),
+                    Text('$pkCol: $pkVal', style: poppins(color: Colors.redAccent, fontSize: 14, fontWeight: FontWeight.bold)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: Text('Cancel', style: poppins(color: Colors.white54, fontWeight: FontWeight.bold)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              onPressed: () {
+                Navigator.pop(ctx);
+                _deleteRow(pkCol, pkVal);
+              },
+              child: Text('Delete', style: poppins(fontWeight: FontWeight.bold)),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   // ────────────────────────── BUILD ──────────────────────────
@@ -198,6 +619,20 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
           ),
         ],
       ),
+      // FAB for adding rows (Bottom Center)
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+      floatingActionButton: (_selectedTable != null && _columns.isNotEmpty && !_isFullscreen)
+          ? FloatingActionButton.extended(
+              backgroundColor: const Color(0xFF00E676),
+              elevation: 6,
+              onPressed: _showAddRowDialog,
+              icon: const Icon(Icons.add_rounded, color: Colors.black, size: 24),
+              label: Text(
+                'Add Row',
+                style: GoogleFonts.poppins(color: Colors.black, fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+            )
+          : null,
     );
   }
 
@@ -507,7 +942,7 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
     );
   }
 
-  // ── Table content with proper InteractiveViewer ───────────────
+  // ── Table content with scrollbars + InteractiveViewer ──────────
   Widget _buildTableContent(TextStyle Function({Color? color, double? fontSize, FontWeight? fontWeight, double? letterSpacing}) poppins) {
     if (_isLoadingQuery && _rows.isEmpty) {
       return const Center(child: CircularProgressIndicator(color: Color(0xFF4DA6FF)));
@@ -529,65 +964,156 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
       );
     }
 
-    // Proper scrollable + zoomable table:
-    // Outer scrolls vertically, inner scrolls horizontally, InteractiveViewer handles pinch-zoom
+    // Proper scrollable + zoomable table with always-visible scrollbars:
     return InteractiveViewer(
       transformationController: _transformCtrl,
       minScale: _minScale,
       maxScale: _maxScale,
-      constrained: true,   // IMPORTANT: keeps the viewer bounded inside its parent
+      constrained: true,
       scaleEnabled: true,
       panEnabled: true,
-      child: SingleChildScrollView(
-        scrollDirection: Axis.vertical,
-        physics: const BouncingScrollPhysics(),
+      child: Scrollbar(
+        controller: _verticalScrollCtrl,
+        thumbVisibility: true,
+        trackVisibility: true,
+        thickness: 8,
+        radius: const Radius.circular(4),
         child: SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
+          controller: _verticalScrollCtrl,
+          scrollDirection: Axis.vertical,
           physics: const BouncingScrollPhysics(),
-          child: DataTable(
-            headingRowColor: WidgetStateProperty.all(const Color(0xFF1E3A63).withValues(alpha: 0.9)),
-            dataRowColor: WidgetStateProperty.resolveWith<Color>((states) {
-              if (states.contains(WidgetState.selected)) {
-                return const Color(0xFF4DA6FF).withValues(alpha: 0.15);
-              }
-              return Colors.black.withValues(alpha: 0.1);
-            }),
-            horizontalMargin: 16,
-            columnSpacing: 24,
-            headingRowHeight: 42,
-            dataRowMinHeight: 38,
-            dataRowMaxHeight: 56,
-            columns: _columns.map((col) {
-              return DataColumn(
-                label: Text(
-                  col['column_name'].toString().toUpperCase(),
-                  style: poppins(
-                    color: const Color(0xFF4DA6FF),
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w900,
-                  ),
-                ),
-              );
-            }).toList(),
-            rows: _rows.map((row) {
-              return DataRow(
-                cells: _columns.map((col) {
-                  final columnName = col['column_name'];
-                  final rawVal = row[columnName];
-                  final displayVal = rawVal == null ? 'NULL' : _formatCellValue(rawVal.toString());
-                  return DataCell(
-                    Text(
-                      displayVal,
+          child: Scrollbar(
+            controller: _horizontalScrollCtrl,
+            thumbVisibility: true,
+            trackVisibility: true,
+            thickness: 8,
+            radius: const Radius.circular(4),
+            notificationPredicate: (notification) => notification.depth == 0,
+            child: SingleChildScrollView(
+              controller: _horizontalScrollCtrl,
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              child: DataTable(
+                headingRowColor: WidgetStateProperty.all(const Color(0xFF1E3A63).withValues(alpha: 0.9)),
+                dataRowColor: WidgetStateProperty.resolveWith<Color>((states) {
+                  if (states.contains(WidgetState.selected)) {
+                    return const Color(0xFF4DA6FF).withValues(alpha: 0.15);
+                  }
+                  return Colors.black.withValues(alpha: 0.1);
+                }),
+                horizontalMargin: 16,
+                columnSpacing: 24,
+                headingRowHeight: 42,
+                dataRowMinHeight: 38,
+                dataRowMaxHeight: 56,
+                columns: [
+                  // Actions column header
+                  DataColumn(
+                    label: Text(
+                      'ACTIONS',
                       style: poppins(
-                        color: rawVal == null ? Colors.white30 : Colors.white,
-                        fontSize: 12.0,
-                        fontWeight: FontWeight.w500,
+                        color: Colors.orangeAccent,
+                        fontSize: 11,
+                        fontWeight: FontWeight.w900,
                       ),
                     ),
+                  ),
+                  ..._columns.map((col) {
+                    return DataColumn(
+                      label: Text(
+                        col['column_name'].toString().toUpperCase(),
+                        style: poppins(
+                          color: const Color(0xFF4DA6FF),
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    );
+                  }),
+                ],
+                rows: _rows.asMap().entries.map((entry) {
+                  final rowIndex = entry.key;
+                  final row = entry.value;
+                  final rowMap = Map<String, dynamic>.from(row);
+                  final isSelected = _selectedRowIndex == rowIndex;
+
+                  return DataRow(
+                    selected: isSelected,
+                    onSelectChanged: (selected) {
+                      setState(() {
+                        _selectedRowIndex = (selected == true) ? rowIndex : null;
+                      });
+                    },
+                    color: WidgetStateProperty.resolveWith<Color>((states) {
+                      if (isSelected) {
+                        return const Color(0xFF4DA6FF).withValues(alpha: 0.35);
+                      }
+                      return rowIndex % 2 == 0
+                          ? Colors.black.withValues(alpha: 0.2)
+                          : Colors.black.withValues(alpha: 0.08);
+                    }),
+                    cells: [
+                      // Actions cell: edit + delete buttons
+                      DataCell(
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            InkWell(
+                              onTap: () => _showEditRowDialog(rowMap),
+                              borderRadius: BorderRadius.circular(6),
+                              child: Container(
+                                padding: const EdgeInsets.all(6),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF4DA6FF).withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Icon(Icons.edit_rounded, color: Color(0xFF4DA6FF), size: 16),
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            InkWell(
+                              onTap: () => _showDeleteConfirmDialog(rowMap),
+                              borderRadius: BorderRadius.circular(6),
+                              child: Container(
+                                padding: const EdgeInsets.all(6),
+                                decoration: BoxDecoration(
+                                  color: Colors.redAccent.withValues(alpha: 0.15),
+                                  borderRadius: BorderRadius.circular(6),
+                                ),
+                                child: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 16),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      // Data cells
+                      ..._columns.map((col) {
+                        final columnName = col['column_name'];
+                        final rawVal = row[columnName];
+                        final displayVal = rawVal == null ? 'NULL' : _formatCellValue(rawVal.toString());
+                        return DataCell(
+                          Text(
+                            displayVal,
+                            style: poppins(
+                              color: isSelected
+                                  ? const Color(0xFF00E676)
+                                  : (rawVal == null ? Colors.white30 : Colors.white),
+                              fontSize: 12.0,
+                              fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                            ),
+                          ),
+                          onTap: () {
+                            setState(() {
+                              _selectedRowIndex = isSelected ? null : rowIndex;
+                            });
+                          },
+                        );
+                      }),
+                    ],
                   );
                 }).toList(),
-              );
-            }).toList(),
+              ),
+            ),
           ),
         ),
       ),
@@ -597,18 +1123,78 @@ class _DatabaseViewerPageState extends State<DatabaseViewerPage> {
   // ── Format cell values — convert UTC ISO timestamps to local time ──
   String _formatCellValue(String? raw) {
     if (raw == null || raw.isEmpty) return 'NULL';
-    // Detect ISO 8601 timestamp pattern: contains 'T' and ends with 'Z' or '+'
     final trimmed = raw.trim();
-    if (trimmed.length >= 16 &&
-        (trimmed.contains('T') || RegExp(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}').hasMatch(trimmed))) {
-      // Try parsing as DateTime
-      final dt = DateTime.tryParse(trimmed);
-      if (dt != null) {
-        final local = dt.toLocal();
-        return DateFormat('dd/MM/yyyy  HH:mm:ss').format(local);
-      }
+    if (trimmed.length >= 10 &&
+        (trimmed.contains('T') || RegExp(r'^\d{4}[-/]\d{1,2}[-/]\d{1,2}').hasMatch(trimmed))) {
+      return _formatDateTimeDisplay(trimmed);
     }
     return trimmed;
+  }
+
+  // ── Date/Time helper: format raw DB timestamp explicitly to IST (`yyyy-MM-dd HH:mm:ss`) ──
+  String _formatDateTimeDisplay(String? raw) {
+    if (raw == null || raw.isEmpty) return 'NULL';
+    final trimmed = raw.trim();
+
+    DateTime? dt;
+    if (trimmed.contains('T') || RegExp(r'^\d{4}[-/]\d{1,2}[-/]\d{1,2}').hasMatch(trimmed)) {
+      if (trimmed.endsWith('Z') || trimmed.contains('+')) {
+        // Explicit UTC -> IST (+05:30)
+        dt = DateTime.tryParse(trimmed)?.toUtc().add(const Duration(hours: 5, minutes: 30));
+      } else if (trimmed.contains('T') && !trimmed.contains('+')) {
+        // Postgres ISO string without Z flag (e.g. 2026-07-21T12:07:52.532)
+        dt = DateTime.tryParse('${trimmed}Z')?.toUtc().add(const Duration(hours: 5, minutes: 30));
+      } else {
+        final parsed = DateTime.tryParse(_normalizeDateTime(trimmed) ?? trimmed);
+        if (parsed != null) {
+          dt = parsed.isUtc ? parsed.add(const Duration(hours: 5, minutes: 30)) : parsed.toLocal();
+        }
+      }
+    }
+
+    if (dt != null) {
+      return DateFormat('yyyy-MM-dd HH:mm:ss').format(dt);
+    }
+
+    return trimmed;
+  }
+
+  // ── Date/Time helper: normalize user inputs like '2026-07-22 03:42:8' into 'yyyy-MM-dd HH:mm:ss' ──
+  String? _normalizeDateTime(String input) {
+    final trimmed = input.trim();
+    if (trimmed.isEmpty) return null;
+
+    final match = RegExp(r'^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?').firstMatch(trimmed);
+    if (match != null) {
+      final year = match.group(1)!;
+      final month = match.group(2)!.padLeft(2, '0');
+      final day = match.group(3)!.padLeft(2, '0');
+      final hour = (match.group(4) ?? '00').padLeft(2, '0');
+      final minute = (match.group(5) ?? '00').padLeft(2, '0');
+      final second = (match.group(6) ?? '00').padLeft(2, '0');
+      return '$year-$month-$day $hour:$minute:$second';
+    }
+
+    final dt = DateTime.tryParse(trimmed);
+    if (dt != null) {
+      return DateFormat('yyyy-MM-dd HH:mm:ss').format(dt.toLocal());
+    }
+
+    return null;
+  }
+
+  Map<String, String> _normalizeRowData(Map<String, String> data) {
+    final normalizedMap = <String, String>{};
+    for (final entry in data.entries) {
+      final val = entry.value;
+      if (val.isNotEmpty && RegExp(r'^\d{4}[-/]\d{1,2}[-/]\d{1,2}').hasMatch(val)) {
+        final norm = _normalizeDateTime(val);
+        normalizedMap[entry.key] = norm ?? val;
+      } else {
+        normalizedMap[entry.key] = val;
+      }
+    }
+    return normalizedMap;
   }
 
   // ── Shared widget builders ────────────────────────────────────
