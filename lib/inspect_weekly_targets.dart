@@ -27,8 +27,8 @@ class _InspectWeeklyTargetsPageState extends State<InspectWeeklyTargetsPage> wit
   String _selectedRole = 'All';
   String _targetStatus = 'All'; // 'All', 'Achieved', 'Pending'
 
-  final List<String> _teams = ['All', 'PR', 'Media', 'Events', 'Web Dev', 'Admin'];
   final List<String> _roles = ['All', 'Lead', 'Member'];
+  List<String> _availableTeams = ['All'];
 
   @override
   void initState() {
@@ -65,8 +65,24 @@ class _InspectWeeklyTargetsPageState extends State<InspectWeeklyTargetsPage> wit
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         if (mounted && data['success'] == true) {
+          final users = data['users'] ?? [];
+          // Build dynamic team list from actual API data
+          final teamSet = <String>{};
+          for (final u in users) {
+            final teams = (u['team'] ?? '').toString().split(',');
+            for (final t in teams) {
+              final trimmed = t.trim();
+              if (trimmed.isNotEmpty) teamSet.add(trimmed);
+            }
+          }
+          final sortedTeams = ['All', ...teamSet.toList()..sort()];
           setState(() {
-            _allUsers = data['users'] ?? [];
+            _allUsers = users;
+            _availableTeams = sortedTeams;
+            // Reset team filter if previously selected team no longer exists in new data
+            if (!sortedTeams.contains(_selectedTeam)) {
+              _selectedTeam = 'All';
+            }
             _isLoading = false;
           });
           _applyFilters();
@@ -94,9 +110,10 @@ class _InspectWeeklyTargetsPageState extends State<InspectWeeklyTargetsPage> wit
         final roll = (u['roll_number'] ?? '').toString().toLowerCase();
         final matchesSearch = name.contains(query) || roll.contains(query);
 
-        // Team filter
+        // Team filter — use contains since team field may be comma-separated
         final team = (u['team'] ?? '').toString();
-        final matchesTeam = _selectedTeam == 'All' || team.toLowerCase() == _selectedTeam.toLowerCase();
+        final matchesTeam = _selectedTeam == 'All' ||
+            team.split(',').map((t) => t.trim().toLowerCase()).contains(_selectedTeam.toLowerCase());
 
         // Role filter
         final role = (u['role'] ?? '').toString();
@@ -240,7 +257,7 @@ class _InspectWeeklyTargetsPageState extends State<InspectWeeklyTargetsPage> wit
                                     value: _selectedTeam,
                                     dropdownColor: const Color(0xFF1A2B4A),
                                     icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF4DA6FF), size: 18),
-                                    items: _teams.map((t) => DropdownMenuItem(
+                                    items: _availableTeams.map((t) => DropdownMenuItem(
                                       value: t,
                                       child: Text('Team: $t', style: poppins(fontSize: 12, color: Colors.white, fontWeight: FontWeight.bold)),
                                     )).toList(),

@@ -27,6 +27,7 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
   final List<String> _roles = ['All Roles', 'Leads Only', 'Members Only'];
   final TextEditingController _searchCtrl = TextEditingController();
   bool _sortAscending = false;
+  List<Map<String, dynamic>> _pendingApprovals = [];
   Timer? _refreshTimer;
   io.Socket? _socket;
   TabController? _tabController;
@@ -93,12 +94,14 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
     _loadTeams();
     _fetchLogs();
     _fetchSummary();
+    _fetchPendingApprovals();
     _searchCtrl.addListener(_onSearchChanged);
     _initSocket();
     // Auto-refresh the admin dashboard every 15 seconds for accurate real-time tracking
     _refreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
       _fetchLogs(silent: true);
       _fetchSummary(silent: true);
+      _fetchPendingApprovals();
     });
   }
 
@@ -212,10 +215,154 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
     }
   }
 
+  Future<void> _fetchPendingApprovals() async {
+    final email = widget.userData?.email;
+    final role = widget.userData?.role;
+    if (email == null || role == null) return;
+    try {
+      final res = await http.get(
+        Uri.parse('$apiBaseUrl/api/logs/pending-approvals?email=${Uri.encodeComponent(email)}&role=${Uri.encodeComponent(role)}'),
+      );
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        if (mounted) {
+          setState(() {
+            _pendingApprovals = List<Map<String, dynamic>>.from(data['requests'] ?? []);
+          });
+        }
+      }
+    } catch (e) {
+      debugPrint('Error fetching pending approvals: $e');
+    }
+  }
+
+  Future<void> _handleSessionRequest(String sessionId, String action) async {
+    final approvedByEmail = widget.userData?.email ?? '';
+    final approvedByName = widget.userData?.name ?? '';
+    
+    try {
+      final res = await http.post(
+        Uri.parse('$apiBaseUrl/api/logs/approve-start'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'session_id': int.tryParse(sessionId) ?? 0,
+          'action': action,
+          'approved_by_email': approvedByEmail,
+          'approved_by_name': approvedByName,
+        }),
+      );
+      if (res.statusCode == 200) {
+        final resData = jsonDecode(res.body);
+        if (resData['success'] == true) {
+          if (!mounted) return;
+          AppToast.show(context, 'Session request $action successfully.', type: ToastType.success);
+          _refreshAll();
+        } else {
+          if (!mounted) return;
+          AppToast.show(context, resData['message'] ?? 'Failed to update request.', type: ToastType.error);
+        }
+      } else {
+        if (!mounted) return;
+        AppToast.show(context, 'Server returned error response.', type: ToastType.error);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      AppToast.show(context, 'Error communicating with server: $e', type: ToastType.error);
+    }
+  }
+
+  Widget _buildPendingApprovals() {
+    if (_pendingApprovals.isEmpty) return const SizedBox.shrink();
+    final poppins = GoogleFonts.poppins;
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(24, 12, 24, 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E2D4A).withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.3)),
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.pending_actions_rounded, color: Colors.orangeAccent, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'PENDING SESSION APPROVALS (${_pendingApprovals.length})',
+                style: poppins(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.orangeAccent,
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          ListView.builder(
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: _pendingApprovals.length,
+            itemBuilder: (context, idx) {
+              final req = _pendingApprovals[idx];
+              return Container(
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            req['user_name'] ?? 'Unknown User',
+                            style: poppins(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '${req['role'] ?? 'Member'}  •  ${req['team'] ?? 'N/A'}',
+                            style: poppins(fontSize: 11, color: const Color(0xFF8A9CC2)),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Row(
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.check_circle_rounded, color: Color(0xFF00C48C), size: 28),
+                          onPressed: () => _handleSessionRequest(req['id'].toString(), 'approved'),
+                          tooltip: 'Approve',
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.cancel_rounded, color: Color(0xFFFF6B6B), size: 28),
+                          onPressed: () => _handleSessionRequest(req['id'].toString(), 'declined'),
+                          tooltip: 'Decline',
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _refreshAll() async {
     await Future.wait([
       _fetchLogs(),
       _fetchSummary(),
+      _fetchPendingApprovals(),
     ]);
   }
 
@@ -407,6 +554,7 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
                   // ── Tab 1: Live Logs ──
                   Column(
                     children: [
+                      _buildPendingApprovals(),
                       _buildSearchAndTeamFilter(poppins),
                       Expanded(
                         child: RefreshIndicator(

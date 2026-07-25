@@ -183,12 +183,43 @@ class NotificationService {
 
   void _handleMessageOpenedApp(RemoteMessage message) {
     debugPrint('[FCM] Opened from background: ${message.data}');
-    openNotificationsPage();
+    _navigateBasedOnNotification(message.data);
   }
 
   void _onNotificationTap(NotificationResponse response) {
     debugPrint('[FCM] Notification tapped: ${response.payload}');
-    openNotificationsPage();
+    if (response.payload != null) {
+      try {
+        final Map<String, dynamic> data = Map<String, dynamic>.from(jsonDecode(response.payload!));
+        _navigateBasedOnNotification(data);
+      } catch (e) {
+        debugPrint('[FCM] Error parsing notification tap payload: $e');
+        openNotificationsPage();
+      }
+    } else {
+      openNotificationsPage();
+    }
+  }
+
+  void _navigateBasedOnNotification(Map<String, dynamic> data) {
+    final category = data['category'] as String? ?? '';
+    final type = data['type'] as String? ?? '';
+
+    debugPrint('[FCM] Navigating for category: $category, type: $type');
+
+    if (category == 'session_request' || category == 'leave_request' || type == 'session_request') {
+      // Direct approver/admin to notifications page where they can take action
+      openNotificationsPage();
+    } else if (category == 'session_status' || type == 'session_approved' || type == 'session_declined') {
+      // User session status changed: direct user to Logs tab (Index 2)
+      final context = navigatorKey.currentContext;
+      if (context != null) {
+        Navigator.of(context).popUntil((route) => route.isFirst);
+      }
+      jumpToDashboardTab(2); // Index 2 is Logs tab
+    } else {
+      openNotificationsPage();
+    }
   }
 
   String _channelIdForType(String type) {

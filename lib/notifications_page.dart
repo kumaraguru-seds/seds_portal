@@ -98,6 +98,9 @@ class _NotificationsPageState extends State<NotificationsPage>
       case 'meeting_reminder': return 'Meeting Reminder';
       case 'meeting_started': return 'Meeting Started';
       case 'session_started': return 'Session Started';
+      case 'session_request': return 'Session Request';
+      case 'session_approved': return 'Session Approved';
+      case 'session_declined': return 'Session Declined';
       case 'attendance_submitted': return 'Attendance';
       case 'attendance_reminder': return 'Attendance Reminder';
       case 'admin_broadcast': return 'Admin Message';
@@ -187,6 +190,61 @@ class _NotificationsPageState extends State<NotificationsPage>
     );
   }
 
+  Future<void> _handleSessionRequest(int notifId, String sessionId, String action) async {
+    final approvedByEmail = widget.userData?.email ?? '';
+    final approvedByName = widget.userData?.name ?? '';
+    
+    try {
+      final res = await http.post(
+        Uri.parse('$apiBaseUrl/api/logs/approve-start'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'session_id': int.tryParse(sessionId) ?? 0,
+          'action': action,
+          'approved_by_email': approvedByEmail,
+          'approved_by_name': approvedByName,
+        }),
+      );
+      if (res.statusCode == 200) {
+        final resData = jsonDecode(res.body);
+        if (resData['success'] == true) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Session request $action successfully.'),
+              backgroundColor: action == 'approved' ? const Color(0xFF00C48C) : const Color(0xFFFF6B6B),
+            ),
+          );
+          _fetchNotifications();
+        } else {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(resData['message'] ?? 'Failed to update request.'),
+              backgroundColor: const Color(0xFFFF6B6B),
+            ),
+          );
+        }
+      } else {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Server returned error response.'),
+            backgroundColor: Color(0xFFFF6B6B),
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error communicating with server: $e'),
+          backgroundColor: const Color(0xFFFF6B6B),
+        ),
+      );
+    }
+  }
+
   Widget _buildCard(int i) {
     final n = _notifications[i];
     final type = (n['type'] as String? ?? 'general');
@@ -194,6 +252,18 @@ class _NotificationsPageState extends State<NotificationsPage>
     final icon = _typeIcon(type);
     final isRead = n['is_read'] == true;
     final isAdminBroadcast = type == 'admin_broadcast';
+
+    final dynamic rawData = n['data'];
+    Map<String, dynamic> dataMap = {};
+    if (rawData != null) {
+      if (rawData is Map) {
+        dataMap = Map<String, dynamic>.from(rawData);
+      } else if (rawData is String) {
+        try {
+          dataMap = Map<String, dynamic>.from(jsonDecode(rawData));
+        } catch (_) {}
+      }
+    }
 
     return TweenAnimationBuilder<double>(
       key: ValueKey(n['id']),
@@ -228,7 +298,6 @@ class _NotificationsPageState extends State<NotificationsPage>
           ),
           child: Stack(
             children: [
-              // Left vertical color accent indicator stripe
               Positioned(
                 left: 0,
                 top: 0,
@@ -249,65 +318,109 @@ class _NotificationsPageState extends State<NotificationsPage>
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                // Icon container
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: color.withValues(alpha: 0.15),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: color.withValues(alpha: 0.3)),
-                  ),
-                  child: Icon(icon, color: color, size: 20),
-                ),
-                const SizedBox(width: 14),
-                // Content
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.15),
+                        shape: BoxShape.circle,
+                        border: Border.all(color: color.withValues(alpha: 0.3)),
+                      ),
+                      child: Icon(icon, color: color, size: 20),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Text(
+                                _typeLabel(type).toUpperCase(),
+                                style: GoogleFonts.poppins(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: color.withValues(alpha: 0.8),
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                              Text(
+                                _formatTime(n['sent_at'] as String?),
+                                style: GoogleFonts.poppins(
+                                  fontSize: 11,
+                                  color: const Color(0xFF8A9CC2),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
                           Text(
-                            _typeLabel(type).toUpperCase(),
+                            n['title'] as String? ?? '',
                             style: GoogleFonts.poppins(
-                              fontSize: 10,
-                              fontWeight: FontWeight.bold,
-                              color: color.withValues(alpha: 0.8),
-                              letterSpacing: 0.5,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w800,
+                              color: isAdminBroadcast ? const Color(0xFFFFD600) : Colors.white,
                             ),
                           ),
+                          const SizedBox(height: 4),
                           Text(
-                            _formatTime(n['sent_at'] as String?),
+                            n['body'] as String? ?? '',
                             style: GoogleFonts.poppins(
-                              fontSize: 11,
-                              color: const Color(0xFF8A9CC2),
+                              fontSize: 12,
+                              fontWeight: isAdminBroadcast ? FontWeight.bold : FontWeight.w400,
+                              color: isAdminBroadcast ? const Color(0xFFFFD600) : const Color(0xFFC9D1E6),
+                              height: 1.5,
                             ),
                           ),
+                          if (type == 'session_request' && dataMap['session_id'] != null) ...[
+                            const SizedBox(height: 12),
+                            if (dataMap['status'] == 'requested' || dataMap['status'] == null) ...[
+                              Row(
+                                children: [
+                                  ElevatedButton(
+                                    onPressed: () => _handleSessionRequest(n['id'] as int, dataMap['session_id'].toString(), 'approved'),
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor: const Color(0xFF00C48C),
+                                      foregroundColor: Colors.white,
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                    ),
+                                    child: Text('Approve', style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.bold)),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  OutlinedButton(
+                                    onPressed: () => _handleSessionRequest(n['id'] as int, dataMap['session_id'].toString(), 'declined'),
+                                    style: OutlinedButton.styleFrom(
+                                      foregroundColor: const Color(0xFFFF6B6B),
+                                      side: const BorderSide(color: Color(0xFFFF6B6B)),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                    ),
+                                    child: Text('Decline', style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.bold)),
+                                  ),
+                                ],
+                              )
+                            ] else ...[
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: (dataMap['status'] == 'approved' ? const Color(0xFF00C48C) : const Color(0xFFFF6B6B)).withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(8),
+                                  border: Border.all(color: (dataMap['status'] == 'approved' ? const Color(0xFF00C48C) : const Color(0xFFFF6B6B)).withValues(alpha: 0.3)),
+                                ),
+                                child: Text(
+                                  dataMap['status'] == 'approved' ? '✓ APPROVED' : '✗ DECLINED',
+                                  style: GoogleFonts.poppins(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: dataMap['status'] == 'approved' ? const Color(0xFF00C48C) : const Color(0xFFFF6B6B),
+                                  ),
+                                ),
+                              ),
+                            ]
+                          ],
                         ],
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        n['title'] as String? ?? '',
-                        style: GoogleFonts.poppins(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w800,
-                          color: isAdminBroadcast ? const Color(0xFFFFD600) : Colors.white,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        n['body'] as String? ?? '',
-                        style: GoogleFonts.poppins(
-                          fontSize: 12,
-                          fontWeight: isAdminBroadcast ? FontWeight.bold : FontWeight.w400,
-                          color: isAdminBroadcast ? const Color(0xFFFFD600) : const Color(0xFFC9D1E6),
-                          height: 1.5,
-                        ),
-                      ),
-                      const SizedBox.shrink(),
-                    ],
                   ),
                 ),
                 if (!isRead)

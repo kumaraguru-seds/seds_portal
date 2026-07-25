@@ -73,6 +73,10 @@ String? currentJwtToken;
 UserData? currentUserData;
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
+void jumpToDashboardTab(int index) {
+  _MainPageState.activeState?.setTab(index);
+}
+
 void openNotificationsPage() {
   final context = navigatorKey.currentContext;
   if (context != null && currentUserData != null) {
@@ -854,13 +858,25 @@ class MainPage extends StatefulWidget {
 }
 
 class _MainPageState extends State<MainPage> {
+  static _MainPageState? activeState;
+
   int _currentIndex = 0;
   late List<Widget> _pages;
   late PageController _pageController;
 
+  void setTab(int index) {
+    if (index >= 0 && index < _pages.length) {
+      setState(() {
+        _currentIndex = index;
+      });
+      _pageController.jumpToPage(index);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    activeState = this;
     _pageController = PageController(initialPage: _currentIndex);
     final isLead = widget.userData?.role == 'Lead';
     final isAdmin =
@@ -904,6 +920,7 @@ class _MainPageState extends State<MainPage> {
 
   @override
   void dispose() {
+    if (activeState == this) activeState = null;
     _pageController.dispose();
     super.dispose();
   }

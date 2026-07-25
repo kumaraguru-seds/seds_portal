@@ -27,6 +27,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
     with WidgetsBindingObserver {
   // Timer state
   bool _isWorking = false;
+  String _requestStatus = 'none';
   DateTime? _startTime;
   int _sessionId = -1;
   String? _logSessionId;
@@ -584,9 +585,43 @@ class _LogsMembersPageState extends State<LogsMembersPage>
         final data = jsonDecode(res.body);
         if (data['session'] != null) {
           final session = data['session'];
-          final st = DateTime.parse(session['start_time']).toLocal();
+          final String status = session['status'] ?? 'approved';
           final id = session['id'] as int;
           final logSessionId = session['log_session_id'] as String?;
+
+          if (status == 'requested') {
+            await prefs.remove('log_start_time_$email');
+            await prefs.setInt('log_session_id_$email', id);
+            if (logSessionId != null) {
+              await prefs.setString('log_session_uuid_$email', logSessionId);
+            }
+            setState(() {
+              _requestStatus = 'requested';
+              _isWorking = false;
+              _sessionId = id;
+              _logSessionId = logSessionId;
+            });
+            _disposeSocket();
+            _ticker?.cancel();
+            return;
+          }
+
+          if (status == 'declined') {
+            await prefs.remove('log_start_time_$email');
+            await prefs.remove('log_session_id_$email');
+            await prefs.remove('log_session_uuid_$email');
+            setState(() {
+              _requestStatus = 'declined';
+              _isWorking = false;
+              _sessionId = -1;
+              _logSessionId = null;
+            });
+            _disposeSocket();
+            _ticker?.cancel();
+            return;
+          }
+
+          final st = DateTime.parse(session['start_time']).toLocal();
           final bool isPaused = session['is_paused'] == true;
           final String locLog = session['location_log'] as String? ?? '';
           
@@ -609,6 +644,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
           }
 
           setState(() {
+            _requestStatus = 'approved';
             _startTime = st;
             _sessionId = id;
             _logSessionId = logSessionId;
@@ -626,6 +662,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
           await prefs.remove('log_session_id_$email');
           await prefs.remove('log_session_uuid_$email');
           setState(() {
+            _requestStatus = 'none';
             _isWorking = false;
             _startTime = null;
             _elapsed = Duration.zero;
@@ -656,23 +693,6 @@ class _LogsMembersPageState extends State<LogsMembersPage>
     final u = widget.userData;
     if (u == null) return;
     try {
-      // Validate attendance status for today
-      final statusRes = await http.get(
-        Uri.parse('$apiBaseUrl/api/attendance/today-status?email=${Uri.encodeComponent(u.email)}'),
-      ).timeout(const Duration(seconds: 10));
-
-      if (statusRes.statusCode == 200) {
-        final statusData = jsonDecode(statusRes.body);
-        if (statusData['allowed'] != true) {
-          final String msg = statusData['message'] ?? 'Attendance validation failed.';
-          _showSnack(msg, type: ToastType.error);
-          return;
-        }
-      } else {
-        _showSnack('Attendance validation failed. Server error.', type: ToastType.error);
-        return;
-      }
-
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
@@ -706,14 +726,32 @@ class _LogsMembersPageState extends State<LogsMembersPage>
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
         if (data['success'] == true) {
-          final st = DateTime.parse(data['start_time']).toLocal();
+          final String status = data['status'] ?? 'approved';
           final id = data['session_id'] as int;
           final email = u.email;
           final prefs = await SharedPreferences.getInstance();
+
+          if (status == 'requested') {
+            await prefs.remove('log_start_time_$email');
+            await prefs.setInt('log_session_id_$email', id);
+            await prefs.setString('log_session_uuid_$email', newUuid);
+            setState(() {
+              _requestStatus = 'requested';
+              _isWorking = false;
+              _sessionId = id;
+              _logSessionId = newUuid;
+            });
+            _showSnack('Session request submitted to Lead/Admin.', type: ToastType.success);
+            return;
+          }
+
+          // Pre-approved session (Admin case)
+          final st = DateTime.parse(data['start_time']).toLocal();
           await prefs.setString('log_start_time_$email', st.toIso8601String());
           await prefs.setInt('log_session_id_$email', id);
           await prefs.setString('log_session_uuid_$email', newUuid);
           setState(() {
+            _requestStatus = 'approved';
             _startTime = st;
             _sessionId = id;
             _logSessionId = newUuid;
@@ -723,7 +761,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
           });
           _startTicker();
           _initSocket();
-          // ── Start background location tracking (survives app minimise/logout)
+          // ── Start background location tracking
           await startBackgroundTracking(email);
         }
       }
@@ -1272,7 +1310,11 @@ class _LogsMembersPageState extends State<LogsMembersPage>
                               ? (_isPaused 
                                   ? const Color(0xFFFFB800).withValues(alpha: 0.4) 
                                   : const Color(0xFF00C48C).withValues(alpha: 0.4)) 
-                              : Colors.white.withValues(alpha: 0.08),
+                              : (_requestStatus == 'requested'
+                                  ? Colors.orangeAccent.withValues(alpha: 0.4)
+                                  : (_requestStatus == 'declined'
+                                      ? Colors.redAccent.withValues(alpha: 0.4)
+                                      : Colors.white.withValues(alpha: 0.08))),
                           width: 1.5,
                         ),
                         boxShadow: _isWorking ? [
@@ -1283,7 +1325,13 @@ class _LogsMembersPageState extends State<LogsMembersPage>
                             blurRadius: 24, 
                             spreadRadius: 2,
                           ),
-                        ] : [],
+                        ] : (_requestStatus == 'requested' ? [
+                          BoxShadow(
+                            color: Colors.orangeAccent.withValues(alpha: 0.15),
+                            blurRadius: 24,
+                            spreadRadius: 2,
+                          ),
+                        ] : []),
                       ),
                       padding: const EdgeInsets.all(24),
                       child: Column(
@@ -1338,33 +1386,77 @@ class _LogsMembersPageState extends State<LogsMembersPage>
                               ),
                             ),
                           ] else ...[
-                            const Icon(Icons.work_outline_rounded, color: Color(0xFF4DA6FF), size: 48),
-                            const SizedBox(height: 14),
-                            Text('Ready to Start', style: poppins(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
-                            const SizedBox(height: 4),
-                            Text(
-                              () {
-                                final now = DateTime.now();
-                                return '${now.day}/${now.month}/${now.year}  •  ${now.hour.toString().padLeft(2,"0")}:${now.minute.toString().padLeft(2,"0")}';
-                              }(),
-                              style: poppins(fontSize: 13, color: const Color(0xFF8A9CC2)),
-                            ),
-                            const SizedBox(height: 20),
-                            SizedBox(
-                              width: double.infinity,
-                              child: ElevatedButton.icon(
-                                onPressed: _startWork,
-                                icon: const Icon(Icons.play_arrow_rounded, size: 26),
-                                label: Text('Start Work', style: poppins(fontWeight: FontWeight.bold, fontSize: 17)),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor: const Color(0xFF4DA6FF),
-                                  foregroundColor: Colors.white,
-                                  padding: const EdgeInsets.symmetric(vertical: 16),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                                  elevation: 0,
+                            if (_requestStatus == 'requested') ...[
+                              const Icon(Icons.hourglass_empty_rounded, color: Colors.orangeAccent, size: 48),
+                              const SizedBox(height: 14),
+                              Text('Session Requested', style: poppins(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+                              const SizedBox(height: 4),
+                              Text('Waiting for Lead/Admin approval...', style: poppins(fontSize: 13, color: Colors.orangeAccent, fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 20),
+                              SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton.icon(
+                                  onPressed: null,
+                                  icon: const Icon(Icons.hourglass_bottom, size: 26, color: Colors.white70),
+                                  label: Text('Requested', style: poppins(fontWeight: FontWeight.bold, fontSize: 17, color: Colors.white70)),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.orangeAccent.withValues(alpha: 0.2),
+                                    padding: const EdgeInsets.symmetric(vertical: 16),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                  ),
                                 ),
                               ),
-                            ),
+                            ] else if (_requestStatus == 'declined') ...[
+                              const Icon(Icons.cancel_rounded, color: Colors.redAccent, size: 48),
+                              const SizedBox(height: 14),
+                              Text('Request Declined', style: poppins(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+                              const SizedBox(height: 4),
+                              Text('Your start session request was declined.', style: poppins(fontSize: 13, color: Colors.redAccent, fontWeight: FontWeight.bold)),
+                              const SizedBox(height: 20),
+                              SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton.icon(
+                                  onPressed: _startWork,
+                                  icon: const Icon(Icons.play_arrow_rounded, size: 26),
+                                  label: Text('Request Start Again', style: poppins(fontWeight: FontWeight.bold, fontSize: 17)),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF4DA6FF),
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(vertical: 16),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                    elevation: 0,
+                                  ),
+                                ),
+                              ),
+                            ] else ...[
+                              const Icon(Icons.work_outline_rounded, color: Color(0xFF4DA6FF), size: 48),
+                              const SizedBox(height: 14),
+                              Text('Ready to Start', style: poppins(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+                              const SizedBox(height: 4),
+                              Text(
+                                () {
+                                  final now = DateTime.now();
+                                  return '${now.day}/${now.month}/${now.year}  •  ${now.hour.toString().padLeft(2,"0")}:${now.minute.toString().padLeft(2,"0")}';
+                                }(),
+                                style: poppins(fontSize: 13, color: const Color(0xFF8A9CC2)),
+                              ),
+                              const SizedBox(height: 20),
+                              SizedBox(
+                                width: double.infinity,
+                                child: ElevatedButton.icon(
+                                  onPressed: _startWork,
+                                  icon: const Icon(Icons.play_arrow_rounded, size: 26),
+                                  label: Text('Start Work', style: poppins(fontWeight: FontWeight.bold, fontSize: 17)),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color(0xFF4DA6FF),
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(vertical: 16),
+                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                    elevation: 0,
+                                  ),
+                                ),
+                              ),
+                            ],
                           ],
                         ],
                       ),
