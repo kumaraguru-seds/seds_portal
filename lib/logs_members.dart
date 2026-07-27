@@ -10,6 +10,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as latlong;
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'notifications_page.dart';
 import 'background_service.dart';
 import 'main.dart';
@@ -38,6 +39,11 @@ class _LogsMembersPageState extends State<LogsMembersPage>
   Timer? _locationTimer;
   // ignore: unused_field
   String _locationLog = '';
+
+  List<Map<String, dynamic>> _myApprovers = [];
+  Timer? _pollTimer;
+  StreamSubscription<RemoteMessage>? _fcmSubscription;
+  int _consecutiveLocationFailures = 0;
 
   // Data
   List<Map<String, dynamic>> _history = [];
@@ -186,9 +192,86 @@ class _LogsMembersPageState extends State<LogsMembersPage>
     }
   }
 
+  void _setupFCMListener() {
+    _fcmSubscription?.cancel();
+    _fcmSubscription = FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      final type = message.data['type'] as String? ?? '';
+      final category = message.data['category'] as String? ?? '';
+      if (type == 'session_approved' || type == 'session_declined' || category == 'session_status') {
+        debugPrint('[FCM Client] Session status updated. Syncing state.');
+        _restoreSession();
+        _loadHistory();
+      }
+    });
+  }
+
+  void _startPollTimer() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
+      if (_requestStatus == 'requested') {
+        _restoreSession();
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  Future<void> _fetchMyApprovers() async {
+    final email = widget.userData?.email;
+    final role = widget.userData?.role;
+    if (email == null || role == null) return;
+    try {
+      final res = await http.get(
+        Uri.parse('$apiBaseUrl/api/logs/pending-approvals?email=${Uri.encodeComponent(email)}&role=${Uri.encodeComponent(role)}'),
+      ).timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final requests = data['requests'] as List? ?? [];
+        if (requests.isNotEmpty) {
+          final reqId = requests.first['id'].toString();
+          final rawApprovers = data['approvers'] as Map? ?? {};
+          final list = List<Map<String, dynamic>>.from(rawApprovers[reqId] ?? []);
+          if (mounted) {
+            setState(() {
+              _myApprovers = list;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error fetching my approvers: $e');
+    }
+  }
+
+  Future<void> _pauseSessionDueToSignalLost() async {
+    final email = widget.userData?.email ?? '';
+    if (email.isEmpty) return;
+
+    _showSnack('⚠️ Location coordinates not getting. Session paused.', type: ToastType.error);
+    
+    try {
+      final res = await http.post(
+        Uri.parse('$apiBaseUrl/api/logs/location'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email': email,
+          'signal_lost': true,
+        }),
+      ).timeout(const Duration(seconds: 5));
+
+      if (res.statusCode == 200 && mounted) {
+        final data = jsonDecode(res.body);
+        _handleLocationResponse(data, email);
+      }
+    } catch (e) {
+      debugPrint('Error pausing due to signal lost: $e');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    _setupFCMListener();
     _fetchGeofence();
     WidgetsBinding.instance.addObserver(this);
     // Defer all heavy work until after first frame to avoid skipped frames
@@ -359,6 +442,8 @@ class _LogsMembersPageState extends State<LogsMembersPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
+    _pollTimer?.cancel();
+    _fcmSubscription?.cancel();
     _positionStreamSubscription?.cancel();
     _mapController.dispose();
     super.dispose();
@@ -501,13 +586,25 @@ class _LogsMembersPageState extends State<LogsMembersPage>
         if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
           // Attempt best accuracy check (use cached fallback to prevent lock contention)
           Position? pos;
+          bool hasError = false;
           try {
             pos = await Geolocator.getCurrentPosition(
               desiredAccuracy: LocationAccuracy.best,
               timeLimit: const Duration(seconds: 4),
             );
+            _consecutiveLocationFailures = 0; // Reset on success
           } catch (_) {
+            hasError = true;
             pos = _lastPos ?? await Geolocator.getLastKnownPosition();
+          }
+
+          if (pos == null && hasError) {
+            _consecutiveLocationFailures++;
+            if (_consecutiveLocationFailures >= 2) {
+              _consecutiveLocationFailures = 0;
+              _pauseSessionDueToSignalLost();
+            }
+            return;
           }
 
           if (pos == null) return;
@@ -601,6 +698,8 @@ class _LogsMembersPageState extends State<LogsMembersPage>
               _sessionId = id;
               _logSessionId = logSessionId;
             });
+            _fetchMyApprovers();
+            _startPollTimer();
             _disposeSocket();
             _ticker?.cancel();
             return;
@@ -655,6 +754,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
           });
           _startTicker();
           _initSocket();
+          await startBackgroundTracking(email);
         } else {
           // Server says no active session, but we thought we had one!
           // Sync with server by clearing local active session.
@@ -725,6 +825,16 @@ class _LogsMembersPageState extends State<LogsMembersPage>
       );
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
+        if (data['already_requested'] == true) {
+          setState(() {
+            _requestStatus = 'requested';
+            _isWorking = false;
+          });
+          _fetchMyApprovers();
+          _startPollTimer();
+          _showSnack('Session request already pending approval.', type: ToastType.warning);
+          return;
+        }
         if (data['success'] == true) {
           final String status = data['status'] ?? 'approved';
           final id = data['session_id'] as int;
@@ -741,6 +851,8 @@ class _LogsMembersPageState extends State<LogsMembersPage>
               _sessionId = id;
               _logSessionId = newUuid;
             });
+            _fetchMyApprovers();
+            _startPollTimer();
             _showSnack('Session request submitted to Lead/Admin.', type: ToastType.success);
             return;
           }
@@ -1392,6 +1504,38 @@ class _LogsMembersPageState extends State<LogsMembersPage>
                               Text('Session Requested', style: poppins(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
                               const SizedBox(height: 4),
                               Text('Waiting for Lead/Admin approval...', style: poppins(fontSize: 13, color: Colors.orangeAccent, fontWeight: FontWeight.bold)),
+                              if (_myApprovers.isNotEmpty) ...[
+                                const SizedBox(height: 16),
+                                Text(
+                                  'Sent to Approvers:',
+                                  style: poppins(fontSize: 12, fontWeight: FontWeight.bold, color: const Color(0xFF4DA6FF)),
+                                ),
+                                const SizedBox(height: 6),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 6,
+                                  alignment: WrapAlignment.center,
+                                  children: _myApprovers.map((a) {
+                                    final isLead = a['role'] == 'Lead';
+                                    return Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                      decoration: BoxDecoration(
+                                        color: Colors.white.withValues(alpha: 0.05),
+                                        borderRadius: BorderRadius.circular(8),
+                                        border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+                                      ),
+                                      child: Text(
+                                        '${a['name']} (${a['role']})',
+                                        style: poppins(
+                                          fontSize: 11,
+                                          color: isLead ? Colors.orangeAccent : const Color(0xFF00C48C),
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    );
+                                  }).toList(),
+                                ),
+                              ],
                               const SizedBox(height: 20),
                               SizedBox(
                                 width: double.infinity,

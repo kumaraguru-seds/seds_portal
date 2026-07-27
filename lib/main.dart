@@ -18,6 +18,7 @@ import 'logs_leads.dart';
 import 'logs_admin.dart';
 import 'notification_service.dart';
 import 'notifications_page.dart';
+import 'session_approvals_page.dart';
 import 'documents_section.dart';
 import 'background_service.dart';
 import 'app_toast.dart';
@@ -38,6 +39,7 @@ import 'export_data_page.dart';
 import 'database_viewer_page.dart';
 import 'inspect_weekly_targets.dart';
 import 'critical_actions_needed.dart';
+import 'app_version_checker_page.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -1354,13 +1356,38 @@ class SEDSFloatingNavigationBar extends StatelessWidget {
                                         ),
                                 ),
                               )
-                            : Icon(
-                                isSelected ? item.activeIcon : item.icon,
-                                color: isSelected
-                                    ? const Color(0xFF0084FF)
-                                    : const Color(0xFF5F6368),
-                                size: isWide ? 34 : 29,
-                              ),
+                            : item.label == 'Logs'
+                                ? ValueListenableBuilder<int>(
+                                    valueListenable: pendingSessionApprovalsCountNotifier,
+                                    builder: (context, count, child) {
+                                      return Badge(
+                                        isLabelVisible: count > 0,
+                                        label: Text(
+                                          '$count',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 9,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                        ),
+                                        backgroundColor: const Color(0xFFFF3B30),
+                                        child: Icon(
+                                          isSelected ? item.activeIcon : item.icon,
+                                          color: isSelected
+                                              ? const Color(0xFF0084FF)
+                                              : const Color(0xFF5F6368),
+                                          size: isWide ? 34 : 29,
+                                        ),
+                                      );
+                                    },
+                                  )
+                                : Icon(
+                                    isSelected ? item.activeIcon : item.icon,
+                                    color: isSelected
+                                        ? const Color(0xFF0084FF)
+                                        : const Color(0xFF5F6368),
+                                    size: isWide ? 34 : 29,
+                                  ),
 
                         // Animated text next to it
                         AnimatedSize(
@@ -3520,6 +3547,23 @@ class _ProfileTabState extends State<ProfileTab> {
                     MaterialPageRoute(
                       builder: (_) => DesktopPageWrapper(
                         child: DatabaseViewerPage(userData: widget.userData!),
+                      ),
+                    ),
+                  ),
+                  poppins: poppins,
+                ),
+                const SizedBox(height: 10),
+                // App Version Checker (Admin only)
+                _buildProfileNavButton(
+                  icon: Icons.phone_android_rounded,
+                  label: 'App Version Checker',
+                  subtitle: 'See which version every user is running',
+                  color: const Color(0xFF9B59B6),
+                  onTap: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => DesktopPageWrapper(
+                        child: AppVersionCheckerPage(userData: widget.userData),
                       ),
                     ),
                   ),

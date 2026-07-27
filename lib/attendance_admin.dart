@@ -27,9 +27,112 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
   final TextEditingController _searchController = TextEditingController();
   String _selectedTeam = 'All';
   String _selectedRole = 'All';
+  String _selectedWeekFilter = 'This Week';
 
   List<String> _teams = ['All', 'PR', 'Media', 'Events', 'Web Dev', 'Admin'];
   final List<String> _roles = ['All', 'Lead', 'Member'];
+  DateTimeRange? _customDateRange;
+  final List<String> _weekKeys = [
+    'Today',
+    'Yesterday',
+    'This Week',
+    'Last Week',
+    '2 Weeks Ago',
+    '3 Weeks Ago',
+    'Specific Date',
+    'All',
+  ];
+
+  Map<String, DateTimeRange> _getWeekRanges() {
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
+
+    final yesterdayStart = todayStart.subtract(const Duration(days: 1));
+    final yesterdayEnd = DateTime(yesterdayStart.year, yesterdayStart.month, yesterdayStart.day, 23, 59, 59);
+
+    final int daysSinceSunday = now.weekday == 7 ? 0 : now.weekday;
+    final DateTime sundayThisWeek = todayStart.subtract(Duration(days: daysSinceSunday));
+    final DateTime saturdayThisWeek = sundayThisWeek.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+
+    final DateTime startLast = sundayThisWeek.subtract(const Duration(days: 7));
+    final DateTime endLast = startLast.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+
+    final DateTime start2Ago = sundayThisWeek.subtract(const Duration(days: 14));
+    final DateTime end2Ago = start2Ago.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+
+    final DateTime start3Ago = sundayThisWeek.subtract(const Duration(days: 21));
+    final DateTime end3Ago = start3Ago.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+
+    final ranges = <String, DateTimeRange>{
+      'Today': DateTimeRange(start: todayStart, end: todayEnd),
+      'Yesterday': DateTimeRange(start: yesterdayStart, end: yesterdayEnd),
+      'This Week': DateTimeRange(start: sundayThisWeek, end: saturdayThisWeek),
+      'Last Week': DateTimeRange(start: startLast, end: endLast),
+      '2 Weeks Ago': DateTimeRange(start: start2Ago, end: end2Ago),
+      '3 Weeks Ago': DateTimeRange(start: start3Ago, end: end3Ago),
+    };
+
+    if (_customDateRange != null) {
+      ranges['Specific Date'] = _customDateRange!;
+    }
+
+    return ranges;
+  }
+
+  String _getWeekLabel(String key) {
+    if (key == 'All') return 'All Time';
+    if (key == 'Today') return 'Today';
+    if (key == 'Yesterday') return 'Yesterday';
+    if (key == 'Specific Date...' || key == 'Specific Date') {
+      if (_customDateRange != null) {
+        final s = _customDateRange!.start;
+        return 'Date: ${s.day.toString().padLeft(2, "0")}/${s.month.toString().padLeft(2, "0")}/${s.year}';
+      }
+      return 'Specific Date...';
+    }
+    final ranges = _getWeekRanges();
+    final range = ranges[key];
+    if (range == null) return key;
+    final sDay = range.start.day.toString().padLeft(2, '0');
+    final sMonth = range.start.month.toString().padLeft(2, '0');
+    final eDay = range.end.day.toString().padLeft(2, '0');
+    final eMonth = range.end.month.toString().padLeft(2, '0');
+    return '$key ($sDay/$sMonth to $eDay/$eMonth)';
+  }
+
+  Future<void> _pickCustomDate(BuildContext context) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _customDateRange?.start ?? DateTime.now(),
+      firstDate: DateTime(2023),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+      builder: (context, child) {
+        return Theme(
+          data: ThemeData.dark().copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: Color(0xFF4DA6FF),
+              onPrimary: Colors.white,
+              surface: Color(0xFF1A2B4A),
+              onSurface: Colors.white,
+            ),
+            dialogTheme: const DialogThemeData(backgroundColor: Color(0xFF0D1E3A)),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null) {
+      final start = DateTime(picked.year, picked.month, picked.day, 0, 0, 0);
+      final end = DateTime(picked.year, picked.month, picked.day, 23, 59, 59);
+      setState(() {
+        _customDateRange = DateTimeRange(start: start, end: end);
+        _selectedWeekFilter = 'Specific Date';
+      });
+      _applyFilters();
+    }
+  }
 
   @override
   void initState() {
@@ -91,15 +194,65 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
     }
   }
 
+  bool _isDateInSelectedWeek(String? dateStr) {
+    if (_selectedWeekFilter == 'All') return true;
+    if (dateStr == null || dateStr.isEmpty) return false;
+
+    // Try ISO parse first (for timestamp-style dates)
+    DateTime? dt = DateTime.tryParse(dateStr)?.toLocal();
+
+    if (dt == null) {
+      // Attendance date field looks like: "07/23/2026 (5:00 PM - 11:00 PM) at SEDS office [OFFLINE]"
+      // Extract the first MM/DD/YYYY or YYYY-MM-DD pattern
+      try {
+        final match = RegExp(r'(\d{1,4})[-/](\d{1,2})[-/](\d{2,4})').firstMatch(dateStr);
+        if (match != null) {
+          final p1 = int.parse(match.group(1)!);
+          final p2 = int.parse(match.group(2)!);
+          final p3 = int.parse(match.group(3)!);
+          if (p1 > 1900) {
+            // YYYY-MM-DD
+            dt = DateTime(p1, p2, p3);
+          } else if (p3 > 1900) {
+            // MM/DD/YYYY (US format used in attendance table)
+            dt = DateTime(p3, p1, p2);
+          } else {
+            // DD/MM/YY fallback
+            dt = DateTime(2000 + p3, p2, p1);
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (dt == null) return false;
+
+    if (_selectedWeekFilter == 'Specific Date' && _customDateRange != null) {
+      return (dt.isAfter(_customDateRange!.start) || dt.isAtSameMomentAs(_customDateRange!.start)) &&
+             (dt.isBefore(_customDateRange!.end) || dt.isAtSameMomentAs(_customDateRange!.end));
+    }
+
+    final ranges = _getWeekRanges();
+    final range = ranges[_selectedWeekFilter];
+    if (range == null) return true;
+
+    return (dt.isAfter(range.start) || dt.isAtSameMomentAs(range.start)) &&
+           (dt.isBefore(range.end) || dt.isAtSameMomentAs(range.end));
+  }
+
+
   void _applyFilters() {
     final query = _searchController.text.trim().toLowerCase();
 
     setState(() {
-      _filteredRecords = _allRecords.where((user) {
+      final List<dynamic> processed = [];
+
+      for (var rawUser in _allRecords) {
+        final user = Map<String, dynamic>.from(rawUser);
+
         // Search matches Name or Roll Number
         final name = (user['name'] ?? '').toString().toLowerCase();
         final roll = (user['roll_number'] ?? '').toString().toLowerCase();
-        final matchesSearch = name.contains(query) || roll.contains(query);
+        final matchesSearch = query.isEmpty || name.contains(query) || roll.contains(query);
 
         // Team filter matches
         final team = (user['team'] ?? '').toString();
@@ -111,15 +264,52 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
             (_selectedRole == 'Lead' && isLead) ||
             (_selectedRole == 'Member' && !isLead);
 
-        return matchesSearch && matchesTeam && matchesRole;
-      }).toList();
+        if (!matchesSearch || !matchesTeam || !matchesRole) continue;
+
+        // Week filter & recalculated metrics
+        final List<dynamic> allRecords = user['records'] ?? [];
+        final filteredRecords = _selectedWeekFilter != 'All'
+            ? allRecords.where((r) {
+                final dateStr = (r['date'] ?? r['meeting_date'] ?? r['created_at'])?.toString();
+                return _isDateInSelectedWeek(dateStr);
+              }).toList()
+            : allRecords;
+
+        int presentCount = 0;
+        int activeMeetings = 0;
+        for (var r in filteredRecords) {
+          final status = (r['status'] ?? '').toString().toUpperCase();
+          if (status == 'PRESENT' || status == 'ABSENT') {
+            activeMeetings++;
+            if (status == 'PRESENT') {
+              presentCount++;
+            }
+          }
+        }
+        final double percentage = activeMeetings > 0 ? (presentCount / activeMeetings) * 100.0 : 0.0;
+
+        user['records'] = filteredRecords;
+        user['total_meetings'] = activeMeetings;
+        user['present_count'] = presentCount;
+        user['percentage'] = percentage;
+
+        processed.add(user);
+      }
 
       // Sort by attendance percentage
-      _filteredRecords.sort((a, b) {
+      processed.sort((a, b) {
         final double pctA = (a['percentage'] as num?)?.toDouble() ?? 0.0;
         final double pctB = (b['percentage'] as num?)?.toDouble() ?? 0.0;
-        return _sortAscending ? pctA.compareTo(pctB) : pctB.compareTo(pctA);
+        if (pctA != pctB) {
+          return _sortAscending ? pctA.compareTo(pctB) : pctB.compareTo(pctA);
+        }
+        // Fallback to name sort
+        final String nameA = (a['name'] ?? '').toString().toLowerCase();
+        final String nameB = (b['name'] ?? '').toString().toLowerCase();
+        return nameA.compareTo(nameB);
       });
+
+      _filteredRecords = processed;
     });
   }
 
@@ -386,7 +576,7 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
                                                 ),
                                                 const SizedBox(width: 4),
                                                 Text(
-                                                  _sortAscending ? 'Shortest' : 'Longest',
+                                                  _sortAscending ? 'Lowest' : 'Highest',
                                                   style: poppins(
                                                     fontSize: 10.5,
                                                     color: const Color(0xFF4DA6FF),
@@ -427,7 +617,7 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
                                 onChanged: (_) => _applyFilters(),
                                 style: poppins(color: Colors.white, fontSize: 14),
                                 decoration: InputDecoration(
-                                  hintText: 'Search by name or roll number...',
+                                  hintText: 'Search user, roll, team...',
                                   hintStyle: poppins(color: const Color(0xFF8A9CC2), fontSize: 13),
                                   prefixIcon: const Icon(Icons.search_rounded, color: Color(0xFF4DA6FF)),
                                   border: InputBorder.none,
@@ -497,6 +687,38 @@ class _AttendanceAdminTabState extends State<AttendanceAdminTab> {
                                   ),
                                 ),
                               ],
+                            ),
+                            const SizedBox(height: 10),
+                            // Week Filter Dropdown
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.06),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+                              ),
+                              child: DropdownButtonHideUnderline(
+                                child: DropdownButton<String>(
+                                  value: _weekKeys.contains(_selectedWeekFilter) ? _selectedWeekFilter : 'This Week',
+                                  isExpanded: true,
+                                  dropdownColor: const Color(0xFF1A2B4A),
+                                  icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF4DA6FF), size: 18),
+                                  items: _weekKeys.map((w) => DropdownMenuItem(
+                                    value: w,
+                                    child: Text(_getWeekLabel(w), style: poppins(fontSize: 12, color: Colors.white, fontWeight: FontWeight.bold)),
+                                  )).toList(),
+                                  onChanged: (val) {
+                                    if (val != null) {
+                                      if (val == 'Specific Date') {
+                                        _pickCustomDate(context);
+                                      } else {
+                                        setState(() => _selectedWeekFilter = val);
+                                        _applyFilters();
+                                      }
+                                    }
+                                  },
+                                ),
+                              ),
                             ),
                           ],
                         ),

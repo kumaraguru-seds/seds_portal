@@ -12,6 +12,8 @@ import 'package:latlong2/latlong.dart' as latlong;
 import 'background_service.dart';
 import 'main.dart';
 import 'app_toast.dart';
+import 'session_approvals_page.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 
 // ─────────────── Lead Logs Page ───────────────
 class LogsLeadsPage extends StatefulWidget {
@@ -37,6 +39,11 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
   Timer? _locationTimer;
   // ignore: unused_field
   String _locationLog = '';
+
+  List<Map<String, dynamic>> _myApprovers = [];
+  Timer? _pollTimer;
+  StreamSubscription<RemoteMessage>? _fcmSubscription;
+  int _consecutiveLocationFailures = 0;
 
   // Search filter
   final TextEditingController _teamSearchController = TextEditingController();
@@ -194,9 +201,86 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
     }
   }
 
+  void _setupFCMListener() {
+    _fcmSubscription?.cancel();
+    _fcmSubscription = FirebaseMessaging.onMessage.listen((RemoteMessage message) {
+      final type = message.data['type'] as String? ?? '';
+      final category = message.data['category'] as String? ?? '';
+      if (type == 'session_approved' || type == 'session_declined' || category == 'session_status') {
+        debugPrint('[FCM Client] Session status updated. Syncing state.');
+        _restoreSession();
+        _loadHistory();
+      }
+    });
+  }
+
+  void _startPollTimer() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
+      if (_requestStatus == 'requested') {
+        _restoreSession();
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  Future<void> _fetchMyApprovers() async {
+    final email = widget.userData?.email;
+    final role = widget.userData?.role;
+    if (email == null || role == null) return;
+    try {
+      final res = await http.get(
+        Uri.parse('$apiBaseUrl/api/logs/pending-approvals?email=${Uri.encodeComponent(email)}&role=${Uri.encodeComponent(role)}'),
+      ).timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        final data = jsonDecode(res.body);
+        final requests = data['requests'] as List? ?? [];
+        if (requests.isNotEmpty) {
+          final reqId = requests.first['id'].toString();
+          final rawApprovers = data['approvers'] as Map? ?? {};
+          final list = List<Map<String, dynamic>>.from(rawApprovers[reqId] ?? []);
+          if (mounted) {
+            setState(() {
+              _myApprovers = list;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('Error fetching my approvers: $e');
+    }
+  }
+
+  Future<void> _pauseSessionDueToSignalLost() async {
+    final email = widget.userData?.email ?? '';
+    if (email.isEmpty) return;
+
+    _showSnack('⚠️ Location coordinates not getting. Session paused.', type: ToastType.error);
+    
+    try {
+      final res = await http.post(
+        Uri.parse('$apiBaseUrl/api/logs/location'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email': email,
+          'signal_lost': true,
+        }),
+      ).timeout(const Duration(seconds: 5));
+
+      if (res.statusCode == 200 && mounted) {
+        final data = jsonDecode(res.body);
+        _handleLocationResponse(data, email);
+      }
+    } catch (e) {
+      debugPrint('Error pausing due to signal lost: $e');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
+    _setupFCMListener();
     _fetchGeofence();
     WidgetsBinding.instance.addObserver(this);
     // Defer all heavy work until after first frame to avoid skipped frames
@@ -378,6 +462,8 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _ticker?.cancel();
+    _pollTimer?.cancel();
+    _fcmSubscription?.cancel();
     _teamRefreshTimer?.cancel();
     _teamSearchController.dispose();
     _positionStreamSubscription?.cancel();
@@ -552,13 +638,25 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
         if (permission == LocationPermission.whileInUse || permission == LocationPermission.always) {
           // Attempt best accuracy check (use cached fallback to prevent lock contention)
           Position? pos;
+          bool hasError = false;
           try {
             pos = await Geolocator.getCurrentPosition(
               desiredAccuracy: LocationAccuracy.best,
               timeLimit: const Duration(seconds: 4),
             );
+            _consecutiveLocationFailures = 0; // Reset on success
           } catch (_) {
+            hasError = true;
             pos = _lastPos ?? await Geolocator.getLastKnownPosition();
+          }
+
+          if (pos == null && hasError) {
+            _consecutiveLocationFailures++;
+            if (_consecutiveLocationFailures >= 2) {
+              _consecutiveLocationFailures = 0;
+              _pauseSessionDueToSignalLost();
+            }
+            return;
           }
 
           if (pos == null) return;
@@ -653,6 +751,8 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
               _sessionId = id;
               _logSessionId = logSessionId;
             });
+            _fetchMyApprovers();
+            _startPollTimer();
             _disposeSocket();
             _ticker?.cancel();
             return;
@@ -707,6 +807,7 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
           });
           _startTicker();
           _initSocket();
+          await startBackgroundTracking(email);
         } else {
           // Server says no active session, but we thought we had one!
           // Sync with server by clearing local active session.
@@ -777,6 +878,16 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
       );
       if (res.statusCode == 200) {
         final data = jsonDecode(res.body);
+        if (data['already_requested'] == true) {
+          setState(() {
+            _requestStatus = 'requested';
+            _isWorking = false;
+          });
+          _fetchMyApprovers();
+          _startPollTimer();
+          _showSnack('Session request already pending approval.', type: ToastType.warning);
+          return;
+        }
         if (data['success'] == true) {
           final String status = data['status'] ?? 'approved';
           final id = data['session_id'] as int;
@@ -793,6 +904,8 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
               _sessionId = id;
               _logSessionId = newUuid;
             });
+            _fetchMyApprovers();
+            _startPollTimer();
             _showSnack('Session request submitted to Admin.', type: ToastType.success);
             return;
           }
@@ -1105,6 +1218,7 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
         if (mounted) {
           setState(() {
             _pendingApprovals = List<Map<String, dynamic>>.from(data['requests'] ?? []);
+            pendingSessionApprovalsCountNotifier.value = _pendingApprovals.length;
           });
         }
       }
@@ -1113,123 +1227,88 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
     }
   }
 
-  Future<void> _handleSessionRequest(String sessionId, String action) async {
-    final approvedByEmail = widget.userData?.email ?? '';
-    final approvedByName = widget.userData?.name ?? '';
-    
-    try {
-      final res = await http.post(
-        Uri.parse('$apiBaseUrl/api/logs/approve-start'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'session_id': int.tryParse(sessionId) ?? 0,
-          'action': action,
-          'approved_by_email': approvedByEmail,
-          'approved_by_name': approvedByName,
-        }),
-      );
-      if (res.statusCode == 200) {
-        final resData = jsonDecode(res.body);
-        if (resData['success'] == true) {
-          if (!mounted) return;
-          _showSnack('Session request $action successfully.', type: ToastType.success);
-          _fetchPendingApprovals();
-          _loadTeamStatus();
-        } else {
-          if (!mounted) return;
-          _showSnack(resData['message'] ?? 'Failed to update request.', type: ToastType.error);
-        }
-      } else {
-        if (!mounted) return;
-        _showSnack('Server returned error response.', type: ToastType.error);
-      }
-    } catch (e) {
-      if (!mounted) return;
-      _showSnack('Error communicating with server: $e', type: ToastType.error);
-    }
-  }
-
   Widget _buildPendingApprovals() {
     if (_pendingApprovals.isEmpty) return const SizedBox.shrink();
     final poppins = GoogleFonts.poppins;
+    final count = _pendingApprovals.length;
 
     return Container(
       margin: const EdgeInsets.fromLTRB(24, 12, 24, 4),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E2D4A).withValues(alpha: 0.5),
+        gradient: const LinearGradient(
+          colors: [Color(0xFF2A1E08), Color(0xFF1E2D4A)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.3)),
+        border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.4)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.orangeAccent.withValues(alpha: 0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            children: [
-              const Icon(Icons.pending_actions_rounded, color: Colors.orangeAccent, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                'PENDING SESSION APPROVALS (${_pendingApprovals.length})',
-                style: poppins(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.orangeAccent,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ],
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.orangeAccent.withValues(alpha: 0.15),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.pending_actions_rounded, color: Colors.orangeAccent, size: 24),
           ),
-          const SizedBox(height: 12),
-          ListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: _pendingApprovals.length,
-            itemBuilder: (context, idx) {
-              final req = _pendingApprovals[idx];
-              return Container(
-                margin: const EdgeInsets.only(bottom: 10),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.05),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Pending Session Requests ($count)',
+                  style: poppins(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
                 ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            req['user_name'] ?? 'Unknown User',
-                            style: poppins(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '${req['role'] ?? 'Member'}  •  ${req['team'] ?? 'N/A'}',
-                            style: poppins(fontSize: 11, color: const Color(0xFF8A9CC2)),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.check_circle_rounded, color: Color(0xFF00C48C), size: 28),
-                          onPressed: () => _handleSessionRequest(req['id'].toString(), 'approved'),
-                          tooltip: 'Approve',
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.cancel_rounded, color: Color(0xFFFF6B6B), size: 28),
-                          onPressed: () => _handleSessionRequest(req['id'].toString(), 'declined'),
-                          tooltip: 'Decline',
-                        ),
-                      ],
-                    ),
-                  ],
+                const SizedBox(height: 2),
+                Text(
+                  'Members waiting for session start approval',
+                  style: poppins(
+                    fontSize: 11,
+                    color: const Color(0xFF8A9CC2),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton(
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => SessionApprovalsPage(userData: widget.userData),
                 ),
               );
+              _fetchPendingApprovals();
             },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orangeAccent,
+              foregroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              elevation: 0,
+            ),
+            child: Text(
+              'Review',
+              style: poppins(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
           ),
         ],
       ),
@@ -1365,6 +1444,9 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
               color: Colors.white,
             ),
           ),
+          actions: [
+            buildSessionApprovalsButton(context, widget.userData, poppins: poppins),
+          ],
           bottom: TabBar(
             indicatorColor: const Color(0xFF4DA6FF),
             labelColor: const Color(0xFF4DA6FF),
@@ -1678,6 +1760,37 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
                                     Text('Session Requested', style: poppins(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
                                     const SizedBox(height: 4),
                                     Text('Waiting for Admin approval...', style: poppins(fontSize: 13, color: Colors.orangeAccent, fontWeight: FontWeight.bold)),
+                                    if (_myApprovers.isNotEmpty) ...[
+                                      const SizedBox(height: 16),
+                                      Text(
+                                        'Sent to Approvers:',
+                                        style: poppins(fontSize: 12, fontWeight: FontWeight.bold, color: const Color(0xFF4DA6FF)),
+                                      ),
+                                      const SizedBox(height: 6),
+                                      Wrap(
+                                        spacing: 8,
+                                        runSpacing: 6,
+                                        alignment: WrapAlignment.center,
+                                        children: _myApprovers.map((a) {
+                                          return Container(
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                            decoration: BoxDecoration(
+                                              color: Colors.white.withValues(alpha: 0.05),
+                                              borderRadius: BorderRadius.circular(8),
+                                              border: Border.all(color: Colors.white.withValues(alpha: 0.05)),
+                                            ),
+                                            child: Text(
+                                              '${a['name']} (${a['role']})',
+                                              style: poppins(
+                                                fontSize: 11,
+                                                color: const Color(0xFF00C48C),
+                                                fontWeight: FontWeight.w600,
+                                              ),
+                                            ),
+                                          );
+                                        }).toList(),
+                                      ),
+                                    ],
                                     const SizedBox(height: 20),
                                     SizedBox(
                                       width: double.infinity,

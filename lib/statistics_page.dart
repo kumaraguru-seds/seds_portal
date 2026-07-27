@@ -27,9 +27,112 @@ class _StatisticsPageState extends State<StatisticsPage>
 
   List<String> _leadTeams = [];
   String _selectedStatsTeam = 'All';
+  String _selectedWeekFilter = 'This Week';
+  DateTimeRange? _customDateRange;
+  final List<String> _weekKeys = [
+    'Today',
+    'Yesterday',
+    'This Week',
+    'Last Week',
+    '2 Weeks Ago',
+    '3 Weeks Ago',
+    'Specific Date',
+    'All',
+  ];
   int _selectedBarIndex = -1;
   int _selectedAttendanceBarIndex = -1;
   String _activeTab = 'logs'; // 'logs' or 'attendance'
+
+  Map<String, DateTimeRange> _getWeekRanges() {
+    final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
+
+    final yesterdayStart = todayStart.subtract(const Duration(days: 1));
+    final yesterdayEnd = DateTime(yesterdayStart.year, yesterdayStart.month, yesterdayStart.day, 23, 59, 59);
+
+    final int daysSinceSunday = now.weekday == 7 ? 0 : now.weekday;
+    final DateTime sundayThisWeek = todayStart.subtract(Duration(days: daysSinceSunday));
+    final DateTime saturdayThisWeek = sundayThisWeek.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+
+    final DateTime startLast = sundayThisWeek.subtract(const Duration(days: 7));
+    final DateTime endLast = startLast.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+
+    final DateTime start2Ago = sundayThisWeek.subtract(const Duration(days: 14));
+    final DateTime end2Ago = start2Ago.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+
+    final DateTime start3Ago = sundayThisWeek.subtract(const Duration(days: 21));
+    final DateTime end3Ago = start3Ago.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+
+    final ranges = <String, DateTimeRange>{
+      'Today': DateTimeRange(start: todayStart, end: todayEnd),
+      'Yesterday': DateTimeRange(start: yesterdayStart, end: yesterdayEnd),
+      'This Week': DateTimeRange(start: sundayThisWeek, end: saturdayThisWeek),
+      'Last Week': DateTimeRange(start: startLast, end: endLast),
+      '2 Weeks Ago': DateTimeRange(start: start2Ago, end: end2Ago),
+      '3 Weeks Ago': DateTimeRange(start: start3Ago, end: end3Ago),
+    };
+
+    if (_customDateRange != null) {
+      ranges['Specific Date'] = _customDateRange!;
+    }
+
+    return ranges;
+  }
+
+  String _getWeekLabel(String key) {
+    if (key == 'All') return 'All Time';
+    if (key == 'Today') return 'Today';
+    if (key == 'Yesterday') return 'Yesterday';
+    if (key == 'Specific Date') {
+      if (_customDateRange != null) {
+        final s = _customDateRange!.start;
+        return 'Date: ${s.day.toString().padLeft(2, "0")}/${s.month.toString().padLeft(2, "0")}/${s.year}';
+      }
+      return 'Specific Date...';
+    }
+    final ranges = _getWeekRanges();
+    final range = ranges[key];
+    if (range == null) return key;
+    final sDay = range.start.day.toString().padLeft(2, '0');
+    final sMonth = range.start.month.toString().padLeft(2, '0');
+    final eDay = range.end.day.toString().padLeft(2, '0');
+    final eMonth = range.end.month.toString().padLeft(2, '0');
+    return '$key ($sDay/$sMonth to $eDay/$eMonth)';
+  }
+
+  Future<void> _pickCustomDate(BuildContext context) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _customDateRange?.start ?? DateTime.now(),
+      firstDate: DateTime(2023),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+      builder: (context, child) {
+        return Theme(
+          data: ThemeData.dark().copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: Color(0xFF4DA6FF),
+              onPrimary: Colors.white,
+              surface: Color(0xFF1A2B4A),
+              onSurface: Colors.white,
+            ),
+            dialogTheme: const DialogThemeData(backgroundColor: Color(0xFF0D1E3A)),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null) {
+      final start = DateTime(picked.year, picked.month, picked.day, 0, 0, 0);
+      final end = DateTime(picked.year, picked.month, picked.day, 23, 59, 59);
+      setState(() {
+        _customDateRange = DateTimeRange(start: start, end: end);
+        _selectedWeekFilter = 'Specific Date';
+      });
+      _applyStatsFilter();
+    }
+  }
 
   @override
   void didUpdateWidget(covariant StatisticsPage oldWidget) {
@@ -222,6 +325,86 @@ class _StatisticsPageState extends State<StatisticsPage>
     });
   }
 
+  bool _isSessionInSelectedWeek(String? dateStr) {
+    if (_selectedWeekFilter == 'All') return true;
+    if (dateStr == null || dateStr.isEmpty) return false;
+
+    DateTime? dt = DateTime.tryParse(dateStr)?.toLocal();
+    if (dt == null) {
+      try {
+        // Match the first date-like pattern: MM/DD/YYYY or DD/MM/YYYY or YYYY-MM-DD
+        final match = RegExp(r'(\d{1,4})[-/](\d{1,2})[-/](\d{2,4})').firstMatch(dateStr);
+        if (match != null) {
+          final p1 = int.parse(match.group(1)!);
+          final p2 = int.parse(match.group(2)!);
+          final p3 = int.parse(match.group(3)!);
+          if (p1 > 1900) {
+            // YYYY-MM-DD
+            dt = DateTime(p1, p2, p3);
+          } else if (p3 > 1900) {
+            // MM/DD/YYYY (US format) — p1=month, p2=day, p3=year
+            dt = DateTime(p3, p1, p2);
+          } else {
+            // DD/MM/YY fallback
+            dt = DateTime(2000 + p3, p2, p1);
+          }
+        }
+      } catch (_) {}
+    }
+    if (dt == null) return false;
+
+    if (_selectedWeekFilter == 'Specific Date' && _customDateRange != null) {
+      return (dt.isAfter(_customDateRange!.start) || dt.isAtSameMomentAs(_customDateRange!.start)) &&
+             (dt.isBefore(_customDateRange!.end) || dt.isAtSameMomentAs(_customDateRange!.end));
+    }
+    
+    final ranges = _getWeekRanges();
+    final range = ranges[_selectedWeekFilter];
+    if (range == null) return true;
+    
+    return (dt.isAfter(range.start) || dt.isAtSameMomentAs(range.start)) && 
+           (dt.isBefore(range.end) || dt.isAtSameMomentAs(range.end));
+  }
+
+  int _getUserSeconds(Map<String, dynamic> u) {
+    if (_selectedWeekFilter == 'All') {
+      return (u['total_seconds'] as int? ?? 0);
+    }
+    final rawSessions = (u['sessions'] as List? ?? []);
+    if (rawSessions.isNotEmpty) {
+      final filtered = rawSessions.where((s) => _isSessionInSelectedWeek(s['start_time'])).toList();
+      int totalSecs = 0;
+      for (final s in filtered) {
+        totalSecs += int.tryParse(s['duration_seconds']?.toString() ?? '0') ?? 0;
+      }
+      return totalSecs;
+    }
+    if (_selectedWeekFilter == 'This Week') {
+      return (u['week_seconds'] as int? ?? 0);
+    }
+    return 0;
+  }
+
+  double _getUserAttendancePct(Map<String, dynamic> u) {
+    if (_selectedWeekFilter == 'All') {
+      return (u['attendance_pct'] as num? ?? 0.0).toDouble();
+    }
+    final rawRecords = (u['records'] as List? ?? u['attendance_records'] as List? ?? []);
+    if (rawRecords.isNotEmpty) {
+      final filtered = rawRecords.where((r) {
+        final dateStr = (r['date'] ?? r['meeting_date'] ?? r['created_at'])?.toString();
+        return _isSessionInSelectedWeek(dateStr);
+      }).toList();
+      if (filtered.isEmpty) return 0.0;
+      int present = 0;
+      for (var r in filtered) {
+        if ((r['status'] ?? '').toString().toUpperCase() == 'PRESENT') present++;
+      }
+      return (present / filtered.length) * 100.0;
+    }
+    return 0.0;
+  }
+
   String _fmtSeconds(int s) {
     final h = s ~/ 3600;
     final m = (s % 3600) ~/ 60;
@@ -248,12 +431,6 @@ class _StatisticsPageState extends State<StatisticsPage>
   @override
   Widget build(BuildContext context) {
     final poppins = GoogleFonts.poppins;
-    final maxSec = _allUsers.isNotEmpty
-        ? (_allUsers
-                  .map((u) => (u['total_seconds'] as int? ?? 0))
-                  .reduce(math.max))
-              .toDouble()
-        : 1.0;
 
     final pageTitle = _isAdmin
         ? 'All Users — Performance'
@@ -340,104 +517,161 @@ class _StatisticsPageState extends State<StatisticsPage>
                   ),
                 ),
 
-                // Search & Filter (Admin & Lead)
-                if (!_isMember)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-                    child: Column(
-                      children: [
-                        TextField(
-                          controller: _searchCtrl,
-                          onChanged: (val) {
-                            _searchQuery = val.toLowerCase();
-                            _applyStatsFilter();
-                          },
-                          style: poppins(color: Colors.white, fontSize: 13.0),
-                          decoration: InputDecoration(
-                            hintText: 'Search by name, team, roll no...',
-                            hintStyle: poppins(
-                              color: Colors.white38,
-                              fontSize: 12.0,
-                            ),
-                            prefixIcon: const Icon(
-                              Icons.search_rounded,
-                              color: Colors.white54,
-                              size: 20,
-                            ),
-                            suffixIcon: _searchQuery.isNotEmpty
-                                ? IconButton(
-                                    onPressed: () {
-                                      _searchCtrl.clear();
-                                      _searchQuery = '';
-                                      _applyStatsFilter();
-                                    },
-                                    icon: const Icon(
-                                      Icons.close_rounded,
-                                      color: Colors.white54,
-                                      size: 18,
-                                    ),
-                                  )
-                                : null,
-                            filled: true,
-                            fillColor: Colors.white.withValues(alpha: 0.06),
-                            contentPadding: const EdgeInsets.symmetric(
-                              vertical: 10,
-                            ),
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide.none,
-                            ),
+                // Search & Filter (All Logins: Admin, Lead, Member)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                  child: Column(
+                    children: [
+                      // Search box
+                      TextField(
+                        controller: _searchCtrl,
+                        onChanged: (val) {
+                          _searchQuery = val.toLowerCase();
+                          _applyStatsFilter();
+                        },
+                        style: poppins(color: Colors.white, fontSize: 13.0),
+                        decoration: InputDecoration(
+                          hintText: 'Search user, roll, team...',
+                          hintStyle: poppins(
+                            color: Colors.white38,
+                            fontSize: 12.0,
+                          ),
+                          prefixIcon: const Icon(
+                            Icons.search_rounded,
+                            color: Color(0xFF4DA6FF),
+                            size: 18,
+                          ),
+                          suffixIcon: _searchQuery.isNotEmpty
+                              ? IconButton(
+                                  onPressed: () {
+                                    _searchCtrl.clear();
+                                    _searchQuery = '';
+                                    _applyStatsFilter();
+                                  },
+                                  icon: const Icon(
+                                    Icons.close_rounded,
+                                    color: Colors.white54,
+                                    size: 18,
+                                  ),
+                                )
+                              : null,
+                          filled: true,
+                          fillColor: Colors.white.withValues(alpha: 0.06),
+                          contentPadding: const EdgeInsets.symmetric(
+                            vertical: 10,
+                          ),
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.1)),
                           ),
                         ),
-                        if (_isAdmin || _leadTeams.length > 1) ...[
-                          const SizedBox(height: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.06),
-                              borderRadius: BorderRadius.circular(12),
-                              border: Border.all(
-                                color: Colors.white.withValues(alpha: 0.1),
-                              ),
-                            ),
-                            child: DropdownButtonHideUnderline(
-                              child: DropdownButton<String>(
-                                value: _selectedStatsTeam,
-                                isExpanded: true,
-                                dropdownColor: const Color(0xFF1A2B4A),
-                                icon: const Icon(
-                                  Icons.keyboard_arrow_down,
-                                  color: Color(0xFF4DA6FF),
-                                  size: 18,
+                      ),
+                      const SizedBox(height: 10),
+                      // Dropdowns Row: Team & Week Range Filter
+                      Row(
+                        children: [
+                          // Team Filter Dropdown
+                          Expanded(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.06),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.1),
                                 ),
-                                items: ['All', ..._leadTeams]
-                                    .map(
-                                      (t) => DropdownMenuItem(
-                                        value: t,
-                                        child: Text(
-                                          t == 'All' ? 'All Teams' : '$t Team',
-                                          style: poppins(
-                                            fontSize: 12,
-                                            color: Colors.white,
-                                            fontWeight: FontWeight.bold,
+                              ),
+                              child: DropdownButtonHideUnderline(
+                                child: DropdownButton<String>(
+                                  value: _selectedStatsTeam,
+                                  isExpanded: true,
+                                  dropdownColor: const Color(0xFF1A2B4A),
+                                  icon: const Icon(
+                                    Icons.keyboard_arrow_down,
+                                    color: Color(0xFF4DA6FF),
+                                    size: 18,
+                                  ),
+                                  items: ['All', ..._leadTeams]
+                                      .map(
+                                        (t) => DropdownMenuItem(
+                                          value: t,
+                                          child: Text(
+                                            'Team: $t',
+                                            style: poppins(
+                                              fontSize: 12,
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                            ),
                                           ),
                                         ),
-                                      ),
-                                    )
-                                    .toList(),
-                                onChanged: (val) {
-                                  if (val != null) {
-                                    setState(() => _selectedStatsTeam = val);
-                                    _applyStatsFilter();
-                                  }
-                                },
+                                      )
+                                      .toList(),
+                                  onChanged: (val) {
+                                    if (val != null) {
+                                      setState(() => _selectedStatsTeam = val);
+                                      _applyStatsFilter();
+                                    }
+                                  },
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          // Week Range Filter Dropdown
+                          Expanded(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: 0.06),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(
+                                  color: Colors.white.withValues(alpha: 0.1),
+                                ),
+                              ),
+                              child: DropdownButtonHideUnderline(
+                                child: DropdownButton<String>(
+                                  value: _selectedWeekFilter,
+                                  isExpanded: true,
+                                  dropdownColor: const Color(0xFF1A2B4A),
+                                  icon: const Icon(
+                                    Icons.keyboard_arrow_down,
+                                    color: Color(0xFF4DA6FF),
+                                    size: 18,
+                                  ),
+                                  items: _weekKeys
+                                      .map(
+                                        (w) => DropdownMenuItem(
+                                          value: w,
+                                          child: Text(
+                                            _getWeekLabel(w),
+                                            style: poppins(
+                                              fontSize: 11,
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                      )
+                                      .toList(),
+                                  onChanged: (val) {
+                                    if (val != null) {
+                                      if (val == 'Specific Date') {
+                                        _pickCustomDate(context);
+                                      } else {
+                                        setState(() => _selectedWeekFilter = val);
+                                        _applyStatsFilter();
+                                      }
+                                    }
+                                  },
+                                ),
                               ),
                             ),
                           ),
                         ],
-                      ],
-                    ),
+                      ),
+                    ],
                   ),
+                ),
 
                 // Content
                 Expanded(
@@ -465,14 +699,14 @@ class _StatisticsPageState extends State<StatisticsPage>
                             final displayUsers = List<Map<String, dynamic>>.from(_filtered);
                             if (_activeTab == 'logs') {
                               displayUsers.sort((a, b) {
-                                final aSec = a['total_seconds'] as int? ?? 0;
-                                final bSec = b['total_seconds'] as int? ?? 0;
+                                final aSec = _getUserSeconds(a);
+                                final bSec = _getUserSeconds(b);
                                 return bSec.compareTo(aSec);
                               });
                             } else {
                               displayUsers.sort((a, b) {
-                                final aPct = (a['attendance_pct'] as num? ?? 0.0).toDouble();
-                                final bPct = (b['attendance_pct'] as num? ?? 0.0).toDouble();
+                                final aPct = _getUserAttendancePct(a);
+                                final bPct = _getUserAttendancePct(b);
                                 if (bPct != aPct) {
                                   return bPct.compareTo(aPct);
                                 }
@@ -481,6 +715,13 @@ class _StatisticsPageState extends State<StatisticsPage>
                                 return bPres.compareTo(aPres);
                               });
                             }
+
+                            final maxSec = displayUsers.isNotEmpty
+                                ? (displayUsers
+                                          .map((u) => _getUserSeconds(u))
+                                          .reduce(math.max))
+                                      .toDouble()
+                                : 1.0;
 
                             return RefreshIndicator(
                               onRefresh: _loadStats,
@@ -651,8 +892,8 @@ class _StatisticsPageState extends State<StatisticsPage>
                                         // Summary bar chart
                                         if (displayUsers.length > 1) ...[
                                           _activeTab == 'logs'
-                                              ? _buildBarChart(maxSec, poppins)
-                                              : _buildAttendanceBarChart(poppins),
+                                              ? _buildBarChart(displayUsers, maxSec, poppins)
+                                              : _buildAttendanceBarChart(displayUsers, poppins),
                                           const SizedBox(height: 16),
                                         ],
 
@@ -690,9 +931,9 @@ class _StatisticsPageState extends State<StatisticsPage>
     );
   }
 
-  Widget _buildBarChart(double maxSec, dynamic poppins) {
-    final displayCount = math.min(_filtered.length, 8);
-    final topUsers = _filtered.take(displayCount).toList();
+  Widget _buildBarChart(List<Map<String, dynamic>> displayUsers, double maxSec, dynamic poppins) {
+    final displayCount = math.min(displayUsers.length, 8);
+    final topUsers = displayUsers.take(displayCount).toList();
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -737,7 +978,7 @@ class _StatisticsPageState extends State<StatisticsPage>
                     ),
                   ),
                   child: Text(
-                    '${topUsers[_selectedBarIndex]['name'].split(' ').first}: ${_fmtSeconds((topUsers[_selectedBarIndex]['total_seconds'] as int? ?? 0))}',
+                    '${topUsers[_selectedBarIndex]['name'].split(' ').first}: ${_fmtSeconds(_getUserSeconds(topUsers[_selectedBarIndex]))}',
                     style: poppins(
                       color: const Color(0xFF4DA6FF),
                       fontSize: 10.0,
@@ -754,7 +995,7 @@ class _StatisticsPageState extends State<StatisticsPage>
               crossAxisAlignment: CrossAxisAlignment.end,
               children: topUsers.asMap().entries.map((entry) {
                 final u = entry.value;
-                final sec = (u['total_seconds'] as int? ?? 0).toDouble();
+                final sec = _getUserSeconds(u).toDouble();
                 final ratio = maxSec > 0 ? (sec / maxSec) : 0.0;
                 final isSelected = _selectedBarIndex == entry.key;
 
@@ -871,12 +1112,12 @@ class _StatisticsPageState extends State<StatisticsPage>
     );
   }
 
-  Widget _buildAttendanceBarChart(dynamic poppins) {
-    final displayCount = math.min(_filtered.length, 8);
-    final topUsers = List<Map<String, dynamic>>.from(_filtered);
+  Widget _buildAttendanceBarChart(List<Map<String, dynamic>> displayUsers, dynamic poppins) {
+    final displayCount = math.min(displayUsers.length, 8);
+    final topUsers = List<Map<String, dynamic>>.from(displayUsers);
     topUsers.sort((a, b) {
-      final aPct = (a['attendance_pct'] as num? ?? 0.0).toDouble();
-      final bPct = (b['attendance_pct'] as num? ?? 0.0).toDouble();
+      final aPct = _getUserAttendancePct(a);
+      final bPct = _getUserAttendancePct(b);
       return bPct.compareTo(aPct);
     });
     final topAttendanceUsers = topUsers.take(displayCount).toList();
@@ -924,7 +1165,7 @@ class _StatisticsPageState extends State<StatisticsPage>
                     ),
                   ),
                   child: Text(
-                    '${topAttendanceUsers[_selectedAttendanceBarIndex]['name'].split(' ').first}: ${(topAttendanceUsers[_selectedAttendanceBarIndex]['attendance_pct'] as num? ?? 0.0).toDouble().toStringAsFixed(1)}%',
+                    '${topAttendanceUsers[_selectedAttendanceBarIndex]['name'].split(' ').first}: ${_getUserAttendancePct(topAttendanceUsers[_selectedAttendanceBarIndex]).toStringAsFixed(1)}%',
                     style: poppins(
                       color: const Color(0xFF00C48C),
                       fontSize: 10.0,
@@ -941,7 +1182,7 @@ class _StatisticsPageState extends State<StatisticsPage>
               crossAxisAlignment: CrossAxisAlignment.end,
               children: topAttendanceUsers.asMap().entries.map((entry) {
                 final u = entry.value;
-                final pct = (u['attendance_pct'] as num? ?? 0.0).toDouble();
+                final pct = _getUserAttendancePct(u);
                 final ratio = pct / 100.0;
                 final isSelected = _selectedAttendanceBarIndex == entry.key;
 
@@ -1059,6 +1300,10 @@ class _StatisticsPageState extends State<StatisticsPage>
   }
 
   Widget _buildTopPerformerCard(Map<String, dynamic> u, dynamic poppins) {
+    final isLogs = _activeTab == 'logs';
+    final userSec = _getUserSeconds(u);
+    final attPct = _getUserAttendancePct(u);
+
     return GestureDetector(
       onTap: () => _showUserAnalysis(u['email'] as String?),
       behavior: HitTestBehavior.opaque,
@@ -1096,91 +1341,88 @@ class _StatisticsPageState extends State<StatisticsPage>
             ),
             const SizedBox(width: 12),
             Expanded(
-              child: Builder(builder: (context) {
-                // Always use global totals — no per-team split
-                final totalSec = u['total_seconds'] as int? ?? 0;
-
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Text(
-                          'Top Performer',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'Top Performer (${isLogs ? "Work Hours" : "Attendance"})',
+                        style: poppins(
+                          color: const Color(0xFFFFD93D),
+                          fontSize: 11.0,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(
+                            0xFFFFD93D,
+                          ).withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Text(
+                          u['role'] as String? ?? 'Member',
                           style: poppins(
                             color: const Color(0xFFFFD93D),
-                            fontSize: 11.0,
-                            fontWeight: FontWeight.bold,
+                            fontSize: 9.0,
                           ),
                         ),
-                        const SizedBox(width: 6),
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(
-                              0xFFFFD93D,
-                            ).withValues(alpha: 0.15),
-                            borderRadius: BorderRadius.circular(6),
-                          ),
-                          child: Text(
-                            u['role'] as String? ?? '',
-                            style: poppins(
-                              color: const Color(0xFFFFD93D),
-                              fontSize: 9.0,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    Text(
-                      u['name'] as String? ?? '',
-                      style: poppins(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
-                        fontSize: 14.0,
                       ),
+                    ],
+                  ),
+                  Text(
+                    u['name'] as String? ?? '',
+                    style: poppins(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14.0,
                     ),
-                    Text(
-                      u['email'] as String? ?? '',
-                      style: poppins(
-                        color: const Color(0xFF4DA6FF),
-                        fontSize: 10.0,
+                  ),
+                  Text(
+                    u['email'] as String? ?? '',
+                    style: poppins(
+                      color: const Color(0xFF4DA6FF),
+                      fontSize: 10.0,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1A2B4A),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.15),
+                          ),
+                        ),
+                        child: Text(
+                          (u['team'] as String? ?? '').isNotEmpty ? (u['team'] as String) : 'N/A',
+                          style: poppins(
+                            color: Colors.white,
+                            fontSize: 10.0,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFF1A2B4A),
-                            borderRadius: BorderRadius.circular(6),
-                            border: Border.all(
-                              color: Colors.white.withValues(alpha: 0.15),
-                            ),
-                          ),
-                          child: Text(
-                            (u['team'] as String? ?? '').isNotEmpty ? (u['team'] as String) : 'N/A',
-                            style: poppins(
-                              color: Colors.white,
-                              fontSize: 10.0,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          '·  ${_fmtSeconds(totalSec)} worked',
-                          style: poppins(color: Colors.white70, fontSize: 11.0),
-                        ),
-                      ],
-                    ),
-                  ],
-                );
-              }),
+                      const SizedBox(width: 8),
+                      Text(
+                        isLogs
+                            ? '·  ${_fmtSeconds(userSec)} worked'
+                            : '·  ${attPct.toStringAsFixed(1)}% attendance',
+                        style: poppins(color: Colors.white70, fontSize: 11.0),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ],
         ),
@@ -1195,13 +1437,12 @@ class _StatisticsPageState extends State<StatisticsPage>
     dynamic poppins,
   ) {
 
-    // Always use global totals — team dropdown removed, no per-team split needed
-    final totalSec = u['total_seconds'] as int? ?? 0;
+    final totalSec = _getUserSeconds(u);
     final weekSec = u['week_seconds'] as int? ?? 0;
     final loginCount = u['login_count'] as int? ?? 0;
     final sessions = u['total_sessions'] as int? ?? 0;
 
-    final attPct = (u['attendance_pct'] as num? ?? 0.0).toDouble();
+    final attPct = _getUserAttendancePct(u);
     final attPresent = u['attendance_present'] as int? ?? 0;
     final attTotal = u['attendance_total'] as int? ?? 0;
     final attRatio = attPct / 100.0;
@@ -1963,7 +2204,7 @@ class _StatisticsPageState extends State<StatisticsPage>
     final memberCount = _filtered.length;
     final totalTeamSeconds = _filtered.fold<int>(
       0,
-      (sum, u) => sum + (u['total_seconds'] as int? ?? 0),
+      (sum, u) => sum + _getUserSeconds(u),
     );
     final avgTeamSeconds = memberCount > 0
         ? (totalTeamSeconds / memberCount).round()
@@ -1971,7 +2212,7 @@ class _StatisticsPageState extends State<StatisticsPage>
 
     final totalAttPct = _filtered.fold<double>(
       0.0,
-      (sum, u) => sum + (u['attendance_pct'] as num? ?? 100.0).toDouble(),
+      (sum, u) => sum + _getUserAttendancePct(u),
     );
     final avgAttPct = memberCount > 0 ? totalAttPct / memberCount : 100.0;
 

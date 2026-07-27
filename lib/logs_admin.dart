@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:socket_io_client/socket_io_client.dart' as io;
 import 'main.dart';
 import 'app_toast.dart';
+import 'session_approvals_page.dart';
 
 // ─────────────── Admin Logs Page ───────────────
 class LogsAdminPage extends StatefulWidget {
@@ -32,49 +33,106 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
   io.Socket? _socket;
   TabController? _tabController;
 
+  DateTimeRange? _customDateRange;
+
   Map<String, DateTimeRange> _getWeekRanges() {
     final now = DateTime.now();
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final todayEnd = DateTime(now.year, now.month, now.day, 23, 59, 59);
+
+    final yesterdayStart = todayStart.subtract(const Duration(days: 1));
+    final yesterdayEnd = DateTime(yesterdayStart.year, yesterdayStart.month, yesterdayStart.day, 23, 59, 59);
+
     final int daysSinceSunday = now.weekday == 7 ? 0 : now.weekday;
-    final DateTime sundayThisWeek = DateTime(now.year, now.month, now.day).subtract(Duration(days: daysSinceSunday));
-    
-    final ranges = <String, DateTimeRange>{};
-    
-    // This Week
-    final startThis = sundayThisWeek;
-    final endThis = sundayThisWeek.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
-    ranges['This Week'] = DateTimeRange(start: startThis, end: endThis);
-    
-    // Last Week
-    final startLast = sundayThisWeek.subtract(const Duration(days: 7));
-    final endLast = startLast.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
-    ranges['Last Week'] = DateTimeRange(start: startLast, end: endLast);
+    final DateTime sundayThisWeek = todayStart.subtract(Duration(days: daysSinceSunday));
+    final DateTime saturdayThisWeek = sundayThisWeek.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
 
-    // 2 Weeks Ago
-    final start2Ago = sundayThisWeek.subtract(const Duration(days: 14));
-    final end2Ago = start2Ago.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
-    ranges['2 Weeks Ago'] = DateTimeRange(start: start2Ago, end: end2Ago);
+    final DateTime startLast = sundayThisWeek.subtract(const Duration(days: 7));
+    final DateTime endLast = startLast.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
 
-    // 3 Weeks Ago
-    final start3Ago = sundayThisWeek.subtract(const Duration(days: 21));
-    final end3Ago = start3Ago.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
-    ranges['3 Weeks Ago'] = DateTimeRange(start: start3Ago, end: end3Ago);
-    
+    final DateTime start2Ago = sundayThisWeek.subtract(const Duration(days: 14));
+    final DateTime end2Ago = start2Ago.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+
+    final DateTime start3Ago = sundayThisWeek.subtract(const Duration(days: 21));
+    final DateTime end3Ago = start3Ago.add(const Duration(days: 6, hours: 23, minutes: 59, seconds: 59));
+
+    final ranges = <String, DateTimeRange>{
+      'Today': DateTimeRange(start: todayStart, end: todayEnd),
+      'Yesterday': DateTimeRange(start: yesterdayStart, end: yesterdayEnd),
+      'This Week': DateTimeRange(start: sundayThisWeek, end: saturdayThisWeek),
+      'Last Week': DateTimeRange(start: startLast, end: endLast),
+      '2 Weeks Ago': DateTimeRange(start: start2Ago, end: end2Ago),
+      '3 Weeks Ago': DateTimeRange(start: start3Ago, end: end3Ago),
+    };
+
+    if (_customDateRange != null) {
+      ranges['Specific Date'] = _customDateRange!;
+    }
+
     return ranges;
   }
 
-  String _getWeekLabel(String key, DateTimeRange range) {
+  String _getWeekLabel(String key, DateTimeRange? range) {
+    if (key == 'All') return 'All Time';
+    if (key == 'Today') return 'Today';
+    if (key == 'Yesterday') return 'Yesterday';
+    if (key == 'Specific Date...' || key == 'Specific Date') {
+      if (_customDateRange != null) {
+        final s = _customDateRange!.start;
+        return 'Date: ${s.day.toString().padLeft(2, "0")}/${s.month.toString().padLeft(2, "0")}/${s.year}';
+      }
+      return 'Specific Date...';
+    }
+    if (range == null) return key;
     final sDay = range.start.day.toString().padLeft(2, '0');
     final sMonth = range.start.month.toString().padLeft(2, '0');
     final eDay = range.end.day.toString().padLeft(2, '0');
     final eMonth = range.end.month.toString().padLeft(2, '0');
-    return '$key (Sun $sDay/$sMonth to Sat $eDay/$eMonth)';
+    return '$key ($sDay/$sMonth to $eDay/$eMonth)';
+  }
+
+  Future<void> _pickCustomDate(BuildContext context) async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _customDateRange?.start ?? DateTime.now(),
+      firstDate: DateTime(2023),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+      builder: (context, child) {
+        return Theme(
+          data: ThemeData.dark().copyWith(
+            colorScheme: const ColorScheme.dark(
+              primary: Color(0xFF4DA6FF),
+              onPrimary: Colors.white,
+              surface: Color(0xFF1A2B4A),
+              onSurface: Colors.white,
+            ),
+            dialogTheme: const DialogThemeData(backgroundColor: Color(0xFF0D1E3A)),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null) {
+      final start = DateTime(picked.year, picked.month, picked.day, 0, 0, 0);
+      final end = DateTime(picked.year, picked.month, picked.day, 23, 59, 59);
+      setState(() {
+        _customDateRange = DateTimeRange(start: start, end: end);
+        _selectedWeekFilter = 'Specific Date';
+      });
+    }
   }
 
   bool _isSessionInSelectedWeek(String? startTimeStr) {
     if (_selectedWeekFilter == 'All') return true;
-    if (startTimeStr == null) return false;
+    if (startTimeStr == null || startTimeStr.isEmpty) return false;
     final dt = DateTime.tryParse(startTimeStr)?.toLocal();
     if (dt == null) return false;
+
+    if (_selectedWeekFilter == 'Specific Date' && _customDateRange != null) {
+      return (dt.isAfter(_customDateRange!.start) || dt.isAtSameMomentAs(_customDateRange!.start)) &&
+             (dt.isBefore(_customDateRange!.end) || dt.isAtSameMomentAs(_customDateRange!.end));
+    }
     
     final ranges = _getWeekRanges();
     final range = ranges[_selectedWeekFilter];
@@ -228,6 +286,7 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
         if (mounted) {
           setState(() {
             _pendingApprovals = List<Map<String, dynamic>>.from(data['requests'] ?? []);
+            pendingSessionApprovalsCountNotifier.value = _pendingApprovals.length;
           });
         }
       }
@@ -236,122 +295,88 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
     }
   }
 
-  Future<void> _handleSessionRequest(String sessionId, String action) async {
-    final approvedByEmail = widget.userData?.email ?? '';
-    final approvedByName = widget.userData?.name ?? '';
-    
-    try {
-      final res = await http.post(
-        Uri.parse('$apiBaseUrl/api/logs/approve-start'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'session_id': int.tryParse(sessionId) ?? 0,
-          'action': action,
-          'approved_by_email': approvedByEmail,
-          'approved_by_name': approvedByName,
-        }),
-      );
-      if (res.statusCode == 200) {
-        final resData = jsonDecode(res.body);
-        if (resData['success'] == true) {
-          if (!mounted) return;
-          AppToast.show(context, 'Session request $action successfully.', type: ToastType.success);
-          _refreshAll();
-        } else {
-          if (!mounted) return;
-          AppToast.show(context, resData['message'] ?? 'Failed to update request.', type: ToastType.error);
-        }
-      } else {
-        if (!mounted) return;
-        AppToast.show(context, 'Server returned error response.', type: ToastType.error);
-      }
-    } catch (e) {
-      if (!mounted) return;
-      AppToast.show(context, 'Error communicating with server: $e', type: ToastType.error);
-    }
-  }
-
   Widget _buildPendingApprovals() {
     if (_pendingApprovals.isEmpty) return const SizedBox.shrink();
     final poppins = GoogleFonts.poppins;
+    final count = _pendingApprovals.length;
 
     return Container(
       margin: const EdgeInsets.fromLTRB(24, 12, 24, 4),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E2D4A).withValues(alpha: 0.5),
+        gradient: const LinearGradient(
+          colors: [Color(0xFF2A1E08), Color(0xFF1E2D4A)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.3)),
+        border: Border.all(color: Colors.orangeAccent.withValues(alpha: 0.4)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.orangeAccent.withValues(alpha: 0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
       ),
       padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            children: [
-              const Icon(Icons.pending_actions_rounded, color: Colors.orangeAccent, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                'PENDING SESSION APPROVALS (${_pendingApprovals.length})',
-                style: poppins(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.orangeAccent,
-                  letterSpacing: 0.5,
-                ),
-              ),
-            ],
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.orangeAccent.withValues(alpha: 0.15),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.pending_actions_rounded, color: Colors.orangeAccent, size: 24),
           ),
-          const SizedBox(height: 12),
-          ListView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: _pendingApprovals.length,
-            itemBuilder: (context, idx) {
-              final req = _pendingApprovals[idx];
-              return Container(
-                margin: const EdgeInsets.only(bottom: 10),
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.05),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Pending Session Requests ($count)',
+                  style: poppins(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                  ),
                 ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            req['user_name'] ?? 'Unknown User',
-                            style: poppins(fontSize: 14, fontWeight: FontWeight.bold, color: Colors.white),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '${req['role'] ?? 'Member'}  •  ${req['team'] ?? 'N/A'}',
-                            style: poppins(fontSize: 11, color: const Color(0xFF8A9CC2)),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Row(
-                      children: [
-                        IconButton(
-                          icon: const Icon(Icons.check_circle_rounded, color: Color(0xFF00C48C), size: 28),
-                          onPressed: () => _handleSessionRequest(req['id'].toString(), 'approved'),
-                          tooltip: 'Approve',
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.cancel_rounded, color: Color(0xFFFF6B6B), size: 28),
-                          onPressed: () => _handleSessionRequest(req['id'].toString(), 'declined'),
-                          tooltip: 'Decline',
-                        ),
-                      ],
-                    ),
-                  ],
+                const SizedBox(height: 2),
+                Text(
+                  'Members waiting for session start approval',
+                  style: poppins(
+                    fontSize: 11,
+                    color: const Color(0xFF8A9CC2),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton(
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => SessionApprovalsPage(userData: widget.userData),
                 ),
               );
+              _fetchPendingApprovals();
             },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.orangeAccent,
+              foregroundColor: Colors.black,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              elevation: 0,
+            ),
+            child: Text(
+              'Review',
+              style: poppins(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
           ),
         ],
       ),
@@ -532,6 +557,9 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
         backgroundColor: Colors.transparent,
         elevation: 0,
         title: Text('Work Logs (Admin)', style: poppins(fontSize: 22, fontWeight: FontWeight.bold, color: Colors.white)),
+        actions: [
+          buildSessionApprovalsButton(context, widget.userData, poppins: poppins),
+        ],
         bottom: TabBar(
           controller: _tabController,
           indicatorColor: const Color(0xFF4DA6FF),
@@ -1066,7 +1094,16 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
   Widget _buildSearchAndTeamFilter(TextStyle Function({Color? color, double? fontSize, FontWeight? fontWeight, double? letterSpacing}) poppins) {
     final showWeekFilter = _tabController != null && _tabController!.index != 0;
     final weekRanges = _getWeekRanges();
-    final weekKeys = ['All', 'This Week', 'Last Week', '2 Weeks Ago', '3 Weeks Ago'];
+    final weekKeys = [
+      'Today',
+      'Yesterday',
+      'This Week',
+      'Last Week',
+      '2 Weeks Ago',
+      '3 Weeks Ago',
+      'Specific Date',
+      'All',
+    ];
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
@@ -1139,13 +1176,13 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
                     ),
                     child: DropdownButtonHideUnderline(
                       child: DropdownButton<String>(
-                        value: _selectedWeekFilter,
+                        value: weekKeys.contains(_selectedWeekFilter) ? _selectedWeekFilter : 'This Week',
                         isExpanded: true,
                         dropdownColor: const Color(0xFF1A2B4A),
                         icon: const Icon(Icons.keyboard_arrow_down, color: Color(0xFF4DA6FF), size: 20),
                         items: weekKeys.map((k) {
                           final range = weekRanges[k];
-                          final label = (k == 'All' || range == null) ? 'All (Last 30 Days)' : _getWeekLabel(k, range);
+                          final label = _getWeekLabel(k, range);
                           return DropdownMenuItem<String>(
                             value: k,
                             child: Text(label, style: poppins(fontSize: 11, color: Colors.white, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
@@ -1153,7 +1190,11 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
                         }).toList(),
                         onChanged: (val) {
                           if (val != null) {
-                            setState(() => _selectedWeekFilter = val);
+                            if (val == 'Specific Date') {
+                              _pickCustomDate(context);
+                            } else {
+                              setState(() => _selectedWeekFilter = val);
+                            }
                           }
                         },
                       ),
