@@ -477,11 +477,17 @@ class _LogsAdminPageState extends State<LogsAdminPage> with SingleTickerProvider
     if (isoStr == null) return '—';
     final dt = DateTime.tryParse(isoStr)?.toLocal();
     if (dt == null) return '—';
+    
+    final period = dt.hour >= 12 ? 'PM' : 'AM';
+    var hour12 = dt.hour % 12;
+    if (hour12 == 0) hour12 = 12;
+    final time12 = '$hour12:${dt.minute.toString().padLeft(2, '0')} $period';
+    
     final now = DateTime.now();
     final diff = now.difference(dt);
-    if (diff.inDays == 0) return 'Today ${dt.hour.toString().padLeft(2,'0')}:${dt.minute.toString().padLeft(2,'0')}';
-    if (diff.inDays == 1) return 'Yesterday ${dt.hour.toString().padLeft(2,'0')}:${dt.minute.toString().padLeft(2,'0')}';
-    return '${dt.day}/${dt.month}/${dt.year}';
+    if (diff.inDays == 0) return 'Today $time12';
+    if (diff.inDays == 1) return 'Yesterday $time12';
+    return '${dt.day}/${dt.month}/${dt.year} $time12';
   }
 
   @override
@@ -1397,24 +1403,38 @@ class _AdminLiveLogTileState extends State<AdminLiveLogTile> {
                   ),
                   if (isPaused) ...[
                     const SizedBox(height: 4),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFB800).withValues(alpha: 0.18),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Icon(Icons.warning_amber_rounded, size: 10, color: Color(0xFFFFB800)),
-                          const SizedBox(width: 4),
-                          Text(
-                            'Paused',
-                            style: widget.poppins(fontSize: 10, fontWeight: FontWeight.bold, color: const Color(0xFFFFB800)),
-                          ),
-                        ],
-                      ),
-                    ),
+                    Builder(builder: (ctx) {
+                      final locationLog = (log['location_log'] as String? ?? '').toLowerCase();
+                      final isGpsOff = locationLog.contains('signal lost');
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: isGpsOff
+                              ? const Color(0xFFFF3B30).withValues(alpha: 0.18)
+                              : const Color(0xFFFFB800).withValues(alpha: 0.18),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              isGpsOff ? Icons.location_off_rounded : Icons.warning_amber_rounded,
+                              size: 10,
+                              color: isGpsOff ? const Color(0xFFFF3B30) : const Color(0xFFFFB800),
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              isGpsOff ? 'GPS Off' : 'Paused',
+                              style: widget.poppins(
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                                color: isGpsOff ? const Color(0xFFFF3B30) : const Color(0xFFFFB800),
+                              ),
+                            ),
+                          ],
+                        ),
+                      );
+                    }),
                   ],
                 ],
               ),
@@ -1423,32 +1443,48 @@ class _AdminLiveLogTileState extends State<AdminLiveLogTile> {
           const SizedBox(height: 12),
           // ── Alert bar when paused ──
           if (isPaused) ...[
-            Container(
-              width: double.infinity,
-              margin: const EdgeInsets.only(bottom: 10),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-              decoration: BoxDecoration(
-                color: const Color(0xFFFFB800).withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFFFFB800).withValues(alpha: 0.4)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.warning_amber_rounded, size: 14, color: Color(0xFFFFB800)),
-                  const SizedBox(width: 6),
-                  Expanded(
-                    child: Text(
-                      '⚠ Session paused — user is outside the geofence',
-                      style: widget.poppins(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: const Color(0xFFFFB800),
+            Builder(builder: (ctx) {
+              final locationLog = (log['location_log'] as String? ?? '').toLowerCase();
+              final isGpsOff = locationLog.contains('signal lost');
+              return Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(bottom: 10),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: isGpsOff
+                      ? const Color(0xFFFF3B30).withValues(alpha: 0.12)
+                      : const Color(0xFFFFB800).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: isGpsOff
+                        ? const Color(0xFFFF3B30).withValues(alpha: 0.4)
+                        : const Color(0xFFFFB800).withValues(alpha: 0.4),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      isGpsOff ? Icons.wifi_off_rounded : Icons.warning_amber_rounded,
+                      size: 14,
+                      color: isGpsOff ? const Color(0xFFFF3B30) : const Color(0xFFFFB800),
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        isGpsOff
+                            ? '📍 Online — Internet/GPS Connection Error'
+                            : '⚠ Session paused — user is outside the geofence',
+                        style: widget.poppins(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: isGpsOff ? const Color(0xFFFF3B30) : const Color(0xFFFFB800),
+                        ),
                       ),
                     ),
-                  ),
-                ],
-              ),
-            ),
+                  ],
+                ),
+              );
+            }),
           ],
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,

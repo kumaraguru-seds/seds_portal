@@ -298,10 +298,10 @@ class _SessionApprovalsPageState extends State<SessionApprovalsPage> with Single
 
       if (!matchesSearch) return false;
 
-      // Date match logic
+      // Date match logic — pending items use created_at (start_time is NULL until approved)
       DateTime? dt;
       if (isPending) {
-        dt = DateTime.tryParse(item['start_time'] ?? '')?.toLocal();
+        dt = DateTime.tryParse(item['created_at'] ?? item['start_time'] ?? '')?.toLocal();
       } else {
         dt = DateTime.tryParse(item['approved_at'] ?? item['start_time'] ?? '')?.toLocal();
       }
@@ -312,8 +312,9 @@ class _SessionApprovalsPageState extends State<SessionApprovalsPage> with Single
     filtered.sort((a, b) {
       DateTime? dtA, dtB;
       if (isPending) {
-        dtA = DateTime.tryParse(a['start_time'] ?? '')?.toLocal();
-        dtB = DateTime.tryParse(b['start_time'] ?? '')?.toLocal();
+        // Use created_at for pending — start_time is NULL until approved
+        dtA = DateTime.tryParse(a['created_at'] ?? a['start_time'] ?? '')?.toLocal();
+        dtB = DateTime.tryParse(b['created_at'] ?? b['start_time'] ?? '')?.toLocal();
       } else {
         dtA = DateTime.tryParse(a['approved_at'] ?? a['start_time'] ?? '')?.toLocal();
         dtB = DateTime.tryParse(b['approved_at'] ?? b['start_time'] ?? '')?.toLocal();
@@ -331,9 +332,13 @@ class _SessionApprovalsPageState extends State<SessionApprovalsPage> with Single
     if (dateStr == null) return 'N/A';
     final dt = DateTime.tryParse(dateStr)?.toLocal();
     if (dt == null) return 'N/A';
-    final hour = dt.hour.toString().padLeft(2, '0');
-    final minute = dt.minute.toString().padLeft(2, '0');
-    return '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year} at $hour:$minute';
+    
+    final period = dt.hour >= 12 ? 'PM' : 'AM';
+    var hour12 = dt.hour % 12;
+    if (hour12 == 0) hour12 = 12;
+    final time12 = '$hour12:${dt.minute.toString().padLeft(2, '0')} $period';
+    
+    return '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year} at $time12';
   }
 
   TextStyle _ts({
@@ -629,7 +634,7 @@ class _SessionApprovalsPageState extends State<SessionApprovalsPage> with Single
     final role = req['role'] ?? 'Member';
     final team = req['team'] ?? 'N/A';
     final roll = req['roll_number'] ?? '';
-    final timeStr = _formatDateTime(req['start_time']);
+    final timeStr = _formatDateTime(req['created_at'] ?? req['start_time']);
     final reqId = req['id'].toString();
 
     // Fetch lists of leads/admins who received/will receive this request
@@ -655,16 +660,39 @@ class _SessionApprovalsPageState extends State<SessionApprovalsPage> with Single
         children: [
           Row(
             children: [
-              CircleAvatar(
-                radius: 22,
-                backgroundColor: const Color(0xFF4DA6FF).withValues(alpha: 0.2),
-                child: Text(
-                  name.isNotEmpty ? name[0].toUpperCase() : 'U',
-                  style: _ts(
-                    fontSize: 16.0,
-                    fontWeight: FontWeight.bold,
-                    color: const Color(0xFF4DA6FF),
-                  ),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(22),
+                child: Container(
+                  width: 44,
+                  height: 44,
+                  color: const Color(0xFF4DA6FF).withValues(alpha: 0.2),
+                  child: (req['image_url'] != null && (req['image_url'] as String).isNotEmpty)
+                      ? Image.network(
+                          req['image_url'],
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return Center(
+                              child: Text(
+                                name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                                style: _ts(
+                                  fontSize: 16.0,
+                                  fontWeight: FontWeight.bold,
+                                  color: const Color(0xFF4DA6FF),
+                                ),
+                              ),
+                            );
+                          },
+                        )
+                      : Center(
+                          child: Text(
+                            name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                            style: _ts(
+                              fontSize: 16.0,
+                              fontWeight: FontWeight.bold,
+                              color: const Color(0xFF4DA6FF),
+                            ),
+                          ),
+                        ),
                 ),
               ),
               const SizedBox(width: 12),
@@ -846,18 +874,41 @@ class _SessionApprovalsPageState extends State<SessionApprovalsPage> with Single
         children: [
           Row(
             children: [
-              CircleAvatar(
-                radius: 22,
-                backgroundColor: isApproved 
-                    ? const Color(0xFF00C48C).withValues(alpha: 0.1) 
-                    : const Color(0xFFFF6B6B).withValues(alpha: 0.1),
-                child: Text(
-                  name.isNotEmpty ? name[0].toUpperCase() : 'U',
-                  style: _ts(
-                    fontSize: 16.0,
-                    fontWeight: FontWeight.bold,
-                    color: isApproved ? const Color(0xFF00C48C) : const Color(0xFFFF6B6B),
-                  ),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(22),
+                child: Container(
+                  width: 44,
+                  height: 44,
+                  color: isApproved 
+                      ? const Color(0xFF00C48C).withValues(alpha: 0.15) 
+                      : const Color(0xFFFF6B6B).withValues(alpha: 0.15),
+                  child: (session['image_url'] != null && (session['image_url'] as String).isNotEmpty)
+                      ? Image.network(
+                          session['image_url'],
+                          fit: BoxFit.cover,
+                          errorBuilder: (context, error, stackTrace) {
+                            return Center(
+                              child: Text(
+                                name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                                style: _ts(
+                                  fontSize: 16.0,
+                                  fontWeight: FontWeight.bold,
+                                  color: isApproved ? const Color(0xFF00C48C) : const Color(0xFFFF6B6B),
+                                ),
+                              ),
+                            );
+                          },
+                        )
+                      : Center(
+                          child: Text(
+                            name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                            style: _ts(
+                              fontSize: 16.0,
+                              fontWeight: FontWeight.bold,
+                              color: isApproved ? const Color(0xFF00C48C) : const Color(0xFFFF6B6B),
+                            ),
+                          ),
+                        ),
                 ),
               ),
               const SizedBox(width: 12),

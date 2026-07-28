@@ -39,19 +39,25 @@ class _NotificationsPageState extends State<NotificationsPage>
     setState(() { _isLoading = true; _error = null; });
     try {
       final email = widget.userData?.email ?? '';
+      if (email.isEmpty) {
+        setState(() { _error = 'Not logged in'; _isLoading = false; });
+        return;
+      }
       final res = await http.get(
         Uri.parse('$apiBaseUrl/api/notifications?email=${Uri.encodeComponent(email)}'),
       ).timeout(const Duration(seconds: 10));
       if (res.statusCode == 200 && mounted) {
-        final data = jsonDecode(res.body) as List;
+        final body = jsonDecode(res.body) as Map<String, dynamic>;
+        final data = (body['notifications'] as List? ?? []);
         setState(() {
-          _notifications = data.map((e) => Map<String, dynamic>.from(e)).toList();
+          _notifications = data.map((e) => Map<String, dynamic>.from(e as Map)).toList();
           _isLoading = false;
         });
       } else {
-        setState(() { _error = 'Failed to load notifications'; _isLoading = false; });
+        setState(() { _error = 'Failed to load notifications (${res.statusCode})'; _isLoading = false; });
       }
     } catch (e) {
+      debugPrint('[Notifications] fetch error: $e');
       setState(() { _error = 'Connection error'; _isLoading = false; });
     }
   }

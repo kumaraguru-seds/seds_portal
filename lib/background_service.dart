@@ -103,6 +103,15 @@ void backgroundServiceOnStart(ServiceInstance service) async {
   });
 
   // Post location every 5 seconds
+  final localNotifications = FlutterLocalNotificationsPlugin();
+  const AndroidInitializationSettings initSettings =
+      AndroidInitializationSettings('@mipmap/ic_launcher');
+  await localNotifications.initialize(
+    const InitializationSettings(android: initSettings),
+  );
+
+  bool locationDisabledNotifSent = false;
+
   Timer.periodic(const Duration(seconds: 5), (timer) async {
     // Read the active session details from SharedPreferences
     final prefs = await SharedPreferences.getInstance();
@@ -116,6 +125,43 @@ void backgroundServiceOnStart(ServiceInstance service) async {
     }
 
     try {
+      // ── Check if GPS service is enabled first ──
+      final bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        // Show notification once until GPS is re-enabled
+        if (!locationDisabledNotifSent) {
+          locationDisabledNotifSent = true;
+          await localNotifications.show(
+            7777,
+            '⚠️ SEDS Portal — GPS Disabled',
+            'Your location was turned off. Work session paused. Tap to re-enable GPS.',
+            const NotificationDetails(
+              android: AndroidNotificationDetails(
+                'seds_session',
+                'Work Sessions',
+                importance: Importance.max,
+                priority: Priority.high,
+                playSound: true,
+                enableVibration: true,
+                ongoing: false,
+              ),
+            ),
+          );
+          // Signal backend to pause
+          try {
+            await http.post(
+              Uri.parse('$_apiBase/api/logs/location'),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({'email': email, 'signal_lost': true}),
+            ).timeout(const Duration(seconds: 8));
+          } catch (_) {}
+        }
+        return;
+      }
+
+      // GPS re-enabled — reset flag so notification can show again if GPS is turned off again
+      locationDisabledNotifSent = false;
+
       // Check permission
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied ||

@@ -1,11 +1,11 @@
 import 'dart:convert';
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'notification_helper.dart';
+import '../../notification_helper.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
-import 'main.dart';
+import '../../main.dart';
 
 // ── Background message handler (must be top-level) ──────────────────────────
 @pragma('vm:entry-point')
@@ -29,43 +29,43 @@ class NotificationService {
   // Android notification channels
   static const AndroidNotificationChannel _meetingChannel =
       AndroidNotificationChannel(
-    'seds_meeting',
-    'Meeting Alerts',
-    description: 'Notifications about meeting schedules and reminders',
-    importance: Importance.max,
-    playSound: true,
-    enableVibration: true,
-  );
+        'seds_meeting',
+        'Meeting Alerts',
+        description: 'Notifications about meeting schedules and reminders',
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: true,
+      );
 
   static const AndroidNotificationChannel _sessionChannel =
       AndroidNotificationChannel(
-    'seds_session',
-    'Work Sessions',
-    description: 'Notifications about work session start and pause',
-    importance: Importance.max,
-    playSound: true,
-    enableVibration: true,
-  );
+        'seds_session',
+        'Work Sessions',
+        description: 'Notifications about work session start and pause',
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: true,
+      );
 
   static const AndroidNotificationChannel _attendanceChannel =
       AndroidNotificationChannel(
-    'seds_attendance',
-    'Attendance',
-    description: 'Attendance submission and reminder notifications',
-    importance: Importance.max,
-    playSound: true,
-    enableVibration: true,
-  );
+        'seds_attendance',
+        'Attendance',
+        description: 'Attendance submission and reminder notifications',
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: true,
+      );
 
   static const AndroidNotificationChannel _generalChannel =
       AndroidNotificationChannel(
-    'seds_general',
-    'General',
-    description: 'General SEDS Portal notifications',
-    importance: Importance.max,
-    playSound: true,
-    enableVibration: true,
-  );
+        'seds_general',
+        'General',
+        description: 'General SEDS Portal notifications',
+        importance: Importance.max,
+        playSound: true,
+        enableVibration: true,
+      );
 
   /// Initialize the full notification stack — call after Firebase.initializeApp()
   Future<void> init({required String userEmail}) async {
@@ -99,9 +99,10 @@ class NotificationService {
       debugPrint('[FCM] Permission: ${settings.authorizationStatus}');
 
       // 2. Create Android notification channels
-      final androidPlugin =
-          _localNotifications.resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>();
+      final androidPlugin = _localNotifications
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >();
       await androidPlugin?.createNotificationChannel(_meetingChannel);
       await androidPlugin?.createNotificationChannel(_sessionChannel);
       await androidPlugin?.createNotificationChannel(_attendanceChannel);
@@ -190,7 +191,9 @@ class NotificationService {
     debugPrint('[FCM] Notification tapped: ${response.payload}');
     if (response.payload != null) {
       try {
-        final Map<String, dynamic> data = Map<String, dynamic>.from(jsonDecode(response.payload!));
+        final Map<String, dynamic> data = Map<String, dynamic>.from(
+          jsonDecode(response.payload!),
+        );
         _navigateBasedOnNotification(data);
       } catch (e) {
         debugPrint('[FCM] Error parsing notification tap payload: $e');
@@ -207,10 +210,14 @@ class NotificationService {
 
     debugPrint('[FCM] Navigating for category: $category, type: $type');
 
-    if (category == 'session_request' || category == 'leave_request' || type == 'session_request') {
+    if (category == 'session_request' ||
+        category == 'leave_request' ||
+        type == 'session_request') {
       // Direct approver/admin to notifications page where they can take action
       openNotificationsPage();
-    } else if (category == 'session_status' || type == 'session_approved' || type == 'session_declined') {
+    } else if (category == 'session_status' ||
+        type == 'session_approved' ||
+        type == 'session_declined') {
       // User session status changed: direct user to Logs tab (Index 2)
       final context = navigatorKey.currentContext;
       if (context != null) {
@@ -256,22 +263,35 @@ class NotificationService {
 
   Future<void> _saveTokenToBackend(String email, String token) async {
     try {
-      await http.post(
-        Uri.parse('$apiBaseUrl/api/fcm/register'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'email': email,
-          'fcm_token': token,
-          'platform': kIsWeb ? 'web' : (Platform.isAndroid ? 'android' : 'ios'),
-        }),
-      ).timeout(const Duration(seconds: 10));
-      debugPrint('[FCM] Token registered successfully');
+      final response = await http
+          .post(
+            Uri.parse('$apiBaseUrl/api/fcm/register'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'email': email,
+              'fcm_token': token,
+              'platform': kIsWeb
+                  ? 'web'
+                  : (Platform.isAndroid ? 'android' : 'ios'),
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+      if (response.statusCode == 200) {
+        debugPrint('[FCM] Token registered successfully');
+      } else {
+        debugPrint(
+          '[FCM] Token registration failed with status: ${response.statusCode}, body: ${response.body}',
+        );
+      }
     } catch (e) {
       debugPrint('[FCM] Token registration error: $e');
     }
   }
 
-  Future<void> showLocalNotification({required String title, required String body}) async {
+  Future<void> showLocalNotification({
+    required String title,
+    required String body,
+  }) async {
     if (kIsWeb) {
       showWebNotification(title, body);
       return;

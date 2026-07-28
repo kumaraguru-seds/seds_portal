@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
@@ -10,6 +11,7 @@ import 'package:socket_io_client/socket_io_client.dart' as io;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart' as latlong;
 import 'background_service.dart';
+import 'notification_service.dart';
 import 'main.dart';
 import 'app_toast.dart';
 import 'session_approvals_page.dart';
@@ -27,6 +29,7 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
     with WidgetsBindingObserver {
   // Timer state
   bool _isWorking = false;
+  bool _gpsDialogShown = false;
   String _requestStatus = 'none';
   DateTime? _startTime;
   int _sessionId = -1;
@@ -277,6 +280,73 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
     }
   }
 
+  Future<void> _onLocationServiceDisabled() async {
+    if (!_isWorking) return;
+
+    // Trigger in-app dialog if not already shown
+    if (!_gpsDialogShown && mounted) {
+      _gpsDialogShown = true;
+      _showGpsEnforcementDialog();
+    }
+
+    // In-app toast
+    _showSnack(
+      '📍 GPS turned off. Session paused. Re-enable location to resume.',
+      type: ToastType.error,
+    );
+    // Pause session on backend via signal_lost
+    await _pauseSessionDueToSignalLost();
+    // Fire a persistent local notification (shows on status bar / lock screen)
+    if (!kIsWeb) {
+      await NotificationService().showLocalNotification(
+        title: '⚠️ SEDS Portal — GPS Disabled',
+        body:
+            'Your location was turned off. Work session paused. Tap to re-enable GPS and resume.',
+      );
+    }
+  }
+
+  void _showGpsEnforcementDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false, // Force them to enable it
+      builder: (BuildContext context) {
+        return PopScope(
+          canPop: false, // Prevent back button from closing it
+          child: AlertDialog(
+            backgroundColor: const Color(0xFF1A2B4A),
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+            title: Row(
+              children: [
+                const Icon(Icons.gps_off_rounded, color: Colors.redAccent, size: 28),
+                const SizedBox(width: 10),
+                Text(
+                  'GPS Location Required',
+                  style: GoogleFonts.poppins(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 18),
+                ),
+              ],
+            ),
+            content: Text(
+              'Your work session is active. You MUST enable GPS location services to continue logging your hours. Turning off GPS will pause your work session.',
+              style: GoogleFonts.poppins(color: const Color(0xFFC9D1E6), fontSize: 14),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () async {
+                  await Geolocator.openLocationSettings();
+                },
+                child: Text(
+                  'Enable GPS Settings',
+                  style: GoogleFonts.poppins(color: const Color(0xFF4DA6FF), fontWeight: FontWeight.bold),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   @override
   void initState() {
     super.initState();
@@ -510,6 +580,22 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
       // Re-init socket when app comes back to foreground
       if (_isWorking) {
         _initSocket();
+        _checkGpsOnResume();
+      }
+    }
+  }
+
+  Future<void> _checkGpsOnResume() async {
+    if (!_isWorking) return;
+    final bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      await _onLocationServiceDisabled();
+    } else {
+      if (_gpsDialogShown && mounted) {
+        setState(() {
+          _gpsDialogShown = false;
+        });
+        Navigator.of(context, rootNavigator: true).pop();
       }
     }
   }
@@ -630,6 +716,22 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
         timer.cancel();
         return;
       }
+
+      // ── Fix: detect if user turned GPS off mid-session ──
+      final bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        await _onLocationServiceDisabled();
+        return;
+      } else {
+        // If GPS is back on, and the dialog was shown, dismiss it!
+        if (_gpsDialogShown && mounted) {
+          setState(() {
+            _gpsDialogShown = false;
+          });
+          Navigator.of(context, rootNavigator: true).pop();
+        }
+      }
+
       try {
         LocationPermission permission = await Geolocator.checkPermission();
         if (permission == LocationPermission.denied) {
@@ -846,6 +948,17 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
     final u = widget.userData;
     if (u == null) return;
     try {
+      // ── Fix: GPS service must be ON before request ──
+      final bool locationServiceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!locationServiceEnabled) {
+        _showSnack(
+          '📍 Location (GPS) is disabled. Please turn on GPS to start a session.',
+          type: ToastType.error,
+        );
+        await Geolocator.openLocationSettings();
+        return;
+      }
+
       LocationPermission permission = await Geolocator.checkPermission();
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
@@ -1399,15 +1512,17 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
     if (isoStr == null) return '—';
     final dt = DateTime.tryParse(isoStr)?.toLocal();
     if (dt == null) return '—';
+    
+    final period = dt.hour >= 12 ? 'PM' : 'AM';
+    var hour12 = dt.hour % 12;
+    if (hour12 == 0) hour12 = 12;
+    final time12 = '$hour12:${dt.minute.toString().padLeft(2, '0')} $period';
+    
     final now = DateTime.now();
     final diff = now.difference(dt);
-    if (diff.inDays == 0) {
-      return 'Today ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-    }
-    if (diff.inDays == 1) {
-      return 'Yesterday ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
-    }
-    return '${dt.day}/${dt.month}/${dt.year}';
+    if (diff.inDays == 0) return 'Today $time12';
+    if (diff.inDays == 1) return 'Yesterday $time12';
+    return '${dt.day}/${dt.month}/${dt.year} $time12';
   }
 
   void _showSnack(String msg, {ToastType type = ToastType.info}) {
