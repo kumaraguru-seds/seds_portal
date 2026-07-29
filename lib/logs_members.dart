@@ -1288,6 +1288,13 @@ class _LogsMembersPageState extends State<LogsMembersPage>
     return '${dt.day}/${dt.month}/${dt.year} $time12';
   }
 
+  String _formatTimeOfDateTime(DateTime dt) {
+    final period = dt.hour >= 12 ? 'PM' : 'AM';
+    var hour12 = dt.hour % 12;
+    if (hour12 == 0) hour12 = 12;
+    return '$hour12:${dt.minute.toString().padLeft(2, '0')} $period';
+  }
+
   void _showSnack(String msg, {ToastType type = ToastType.info}) {
     if (!mounted) return;
     AppToast.show(context, msg, type: type);
@@ -1598,7 +1605,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              'Started at ${_startTime != null ? '${_startTime!.hour.toString().padLeft(2,"0")}:${_startTime!.minute.toString().padLeft(2,"0")}' : '--:--'}',
+                              'Started at ${_startTime != null ? _formatTimeOfDateTime(_startTime!) : '--:--'}',
                               style: poppins(fontSize: 13, color: const Color(0xFF8A9CC2)),
                             ),
                             const SizedBox(height: 20),
@@ -1700,7 +1707,7 @@ class _LogsMembersPageState extends State<LogsMembersPage>
                               Text(
                                 () {
                                   final now = DateTime.now();
-                                  return '${now.day}/${now.month}/${now.year}  •  ${now.hour.toString().padLeft(2,"0")}:${now.minute.toString().padLeft(2,"0")}';
+                                  return '${now.day}/${now.month}/${now.year}  •  ${_formatTimeOfDateTime(now)}';
                                 }(),
                                 style: poppins(fontSize: 13, color: const Color(0xFF8A9CC2)),
                               ),

@@ -216,6 +216,20 @@ void main() async {
   // Initialize notifications if user is already logged in
   if (userData != null) {
     await NotificationService().init(userEmail: userData.email);
+
+    // Silently report current app version to backend (fixes version tracker
+    // for users who never re-login after updating the app)
+    try {
+      final packageInfo = await PackageInfo.fromPlatform();
+      await http.post(
+        Uri.parse('$apiBaseUrl/api/sessions/update-version'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email': userData.email,
+          'app_version': packageInfo.version,
+        }),
+      ).timeout(const Duration(seconds: 8));
+    } catch (_) {}
   }
 
   // Initialize background location service (Android foreground service only)

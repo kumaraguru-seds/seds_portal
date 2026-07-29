@@ -136,19 +136,73 @@ class _ApplyLeavePageState extends State<ApplyLeavePage> {
   Future<void> _loadPendingLeaves() async {
     setState(() => _isLoadingPending = true);
     try {
-      String url;
       if (_isAdmin) {
-        url = '$apiBaseUrl/api/leave/all-leaves';
-      } else {
+        // Admin sees all leaves — deduplicate by id in case of double-submits
+        final res = await http
+            .get(Uri.parse('$apiBaseUrl/api/leave/all-leaves'))
+            .timeout(const Duration(seconds: 15));
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body);
+          if (mounted) {
+            final rawLeaves = List<Map<String, dynamic>>.from(data['leaves'] ?? []);
+            // Deduplicate by id (keep first occurrence = latest applied_at since sorted DESC)
+            final Map<dynamic, Map<String, dynamic>> seen = {};
+            for (final l in rawLeaves) {
+              final lid = l['id'];
+              if (lid != null && !seen.containsKey(lid)) seen[lid] = l;
+            }
+            setState(() {
+              _pendingLeaves = seen.values.toList();
+            });
+          }
+        }
+      } else if (_teams.length <= 1) {
+        // Single-team lead — simple fetch
         final team = _teams.isNotEmpty ? _teams.first : '';
-        url = '$apiBaseUrl/api/leave/team-leaves?team=${Uri.encodeComponent(team)}';
-      }
-      final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 15));
-      if (res.statusCode == 200) {
-        final data = jsonDecode(res.body);
+        if (team.isEmpty) return;
+        final res = await http
+            .get(Uri.parse('$apiBaseUrl/api/leave/team-leaves?team=${Uri.encodeComponent(team)}'))
+            .timeout(const Duration(seconds: 15));
+        if (res.statusCode == 200) {
+          final data = jsonDecode(res.body);
+          if (mounted) {
+            setState(() {
+              _pendingLeaves = List<Map<String, dynamic>>.from(data['leaves'] ?? []);
+            });
+          }
+        }
+      } else {
+        // Multi-team lead: fetch from ALL teams in parallel and deduplicate by id
+        final futures = _teams.map((t) => http
+            .get(Uri.parse('$apiBaseUrl/api/leave/team-leaves?team=${Uri.encodeComponent(t)}'))
+            .timeout(const Duration(seconds: 15)));
+
+        final responses = await Future.wait(futures, eagerError: false);
+
+        final Map<dynamic, Map<String, dynamic>> seenIds = {};
+        for (final res in responses) {
+          if (res.statusCode == 200) {
+            final data = jsonDecode(res.body);
+            final leaves = List<Map<String, dynamic>>.from(data['leaves'] ?? []);
+            for (final l in leaves) {
+              final lid = l['id'];
+              if (lid != null && !seenIds.containsKey(lid)) {
+                seenIds[lid] = l;
+              }
+            }
+          }
+        }
+
         if (mounted) {
+          // Sort merged results by applied_at descending
+          final merged = seenIds.values.toList();
+          merged.sort((a, b) {
+            final ta = a['applied_at'] as String? ?? '';
+            final tb = b['applied_at'] as String? ?? '';
+            return tb.compareTo(ta);
+          });
           setState(() {
-            _pendingLeaves = List<Map<String, dynamic>>.from(data['leaves'] ?? []);
+            _pendingLeaves = merged;
           });
         }
       }
@@ -851,6 +905,7 @@ class _ApplyLeavePageState extends State<ApplyLeavePage> {
     final timeTo = leave['time_to'] as String?;
     final timeStr = (timeFrom != null && timeTo != null) ? ' ($timeFrom - $timeTo)' : '';
     final isPending = status == 'pending';
+    final String name = leave['user_name'] as String? ?? '';
     return Container(
       margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
@@ -862,71 +917,114 @@ class _ApplyLeavePageState extends State<ApplyLeavePage> {
                 ? const Color(0xFF4DA6FF).withValues(alpha: 0.3)
                 : _statusColor(status).withValues(alpha: 0.2)),
       ),
-      child: Column(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(leave['user_name'] as String? ?? '',
-                    style: poppins(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13.0)),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                decoration: BoxDecoration(
-                  color: _statusColor(status).withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(_statusLabel(status),
-                    style: poppins(color: _statusColor(status), fontSize: 10.0, fontWeight: FontWeight.bold)),
-              ),
-            ],
-          ),
-          if (leave['team'] != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 2),
-              child: Text('${leave['team']} · ${leave['roll_number'] ?? ''}',
-                  style: poppins(color: Colors.white54, fontSize: 11.0)),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: Container(
+              width: 36,
+              height: 36,
+              color: const Color(0xFF4DA6FF).withValues(alpha: 0.15),
+              child: (leave['image_url'] != null && (leave['image_url'] as String).isNotEmpty)
+                  ? Image.network(
+                      leave['image_url'],
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) {
+                        return Center(
+                          child: Text(
+                            name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                            style: poppins(
+                              fontSize: 14.0,
+                              fontWeight: FontWeight.bold,
+                              color: const Color(0xFF4DA6FF),
+                            ),
+                          ),
+                        );
+                      },
+                    )
+                  : Center(
+                      child: Text(
+                        name.isNotEmpty ? name[0].toUpperCase() : 'U',
+                        style: poppins(
+                          fontSize: 14.0,
+                          fontWeight: FontWeight.bold,
+                          color: const Color(0xFF4DA6FF),
+                        ),
+                      ),
+                    ),
             ),
-          const SizedBox(height: 6),
-          Text('$dateFrom → $dateTo$timeStr', style: poppins(color: Colors.white70, fontSize: 12.0, fontWeight: FontWeight.w600)),
-          const SizedBox(height: 4),
-          Text(leave['reason'] as String? ?? '',
-              style: poppins(color: Colors.white54, fontSize: 12.0), maxLines: 2, overflow: TextOverflow.ellipsis),
-          if (isPending) ...[
-            const SizedBox(height: 10),
-            Row(
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: () => _showRejectConfirmation(context, leave['id'] as int, leave['user_name'] as String? ?? 'this member'),
-                    style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: Color(0xFFFF6B6B)),
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(name,
+                          style: poppins(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13.0)),
                     ),
-                    icon: const Icon(Icons.close_rounded, color: Color(0xFFFF6B6B), size: 16),
-                    label: Text('Reject', style: poppins(color: const Color(0xFFFF6B6B), fontSize: 12.0, fontWeight: FontWeight.bold)),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: () => _showApproveConfirmation(context, leave['id'] as int, leave['user_name'] as String? ?? 'this member'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF00C48C),
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                      elevation: 0,
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: _statusColor(status).withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(_statusLabel(status),
+                          style: poppins(color: _statusColor(status), fontSize: 10.0, fontWeight: FontWeight.bold)),
                     ),
-                    icon: const Icon(Icons.check_rounded, size: 16),
-                    label: Text('Approve', style: poppins(fontWeight: FontWeight.bold, fontSize: 12.0)),
-                  ),
+                  ],
                 ),
+                if (leave['team'] != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text('${leave['team']} · ${leave['roll_number'] ?? ''}',
+                        style: poppins(color: Colors.white54, fontSize: 11.0)),
+                  ),
+                const SizedBox(height: 6),
+                Text('$dateFrom → $dateTo$timeStr', style: poppins(color: Colors.white70, fontSize: 12.0, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 4),
+                Text(leave['reason'] as String? ?? '',
+                    style: poppins(color: Colors.white54, fontSize: 12.0), maxLines: 2, overflow: TextOverflow.ellipsis),
+                if (isPending) ...[
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () => _showRejectConfirmation(context, leave['id'] as int, name),
+                          style: OutlinedButton.styleFrom(
+                            side: const BorderSide(color: Color(0xFFFF6B6B)),
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          ),
+                          icon: const Icon(Icons.close_rounded, color: Color(0xFFFF6B6B), size: 16),
+                          label: Text('Reject', style: poppins(color: const Color(0xFFFF6B6B), fontSize: 12.0, fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: ElevatedButton.icon(
+                          onPressed: () => _showApproveConfirmation(context, leave['id'] as int, name),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF00C48C),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                            elevation: 0,
+                          ),
+                          icon: const Icon(Icons.check_rounded, size: 16),
+                          label: Text('Approve', style: poppins(fontWeight: FontWeight.bold, fontSize: 12.0)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
-          ],
+          ),
         ],
       ),
     );
