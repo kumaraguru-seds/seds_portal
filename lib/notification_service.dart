@@ -231,20 +231,21 @@ class NotificationService {
 
   String _channelIdForType(String type) {
     if (type.contains('meeting')) return 'seds_meeting';
-    if (type.contains('session')) return 'seds_session';
+    if (type.contains('session') || type.contains('location_lost')) return 'seds_session';
     if (type.contains('attendance')) return 'seds_attendance';
     return 'seds_general';
   }
 
   String _channelNameForType(String type) {
     if (type.contains('meeting')) return 'Meeting Alerts';
-    if (type.contains('session')) return 'Work Sessions';
+    if (type.contains('session') || type.contains('location_lost')) return 'Work Sessions';
     if (type.contains('attendance')) return 'Attendance';
     return 'General';
   }
 
   Color _colorForType(String type) {
     if (type.contains('meeting')) return const Color(0xFF4DA6FF);
+    if (type.contains('location_lost')) return const Color(0xFFFF6B6B); // Red for location lost
     if (type.contains('session')) return const Color(0xFF00C48C);
     if (type.contains('attendance')) return const Color(0xFFFF9F43);
     return const Color(0xFF8A9CC2);

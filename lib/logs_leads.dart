@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' as dart_io;
 import 'dart:math';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
@@ -909,7 +911,10 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
           });
           _startTicker();
           _initSocket();
-          await startBackgroundTracking(email);
+          if (!kIsWeb && dart_io.Platform.isAndroid) {
+            await Permission.ignoreBatteryOptimizations.request();
+          }
+          await startBackgroundTracking(email, sessionStart: st);
         } else {
           // Server says no active session, but we thought we had one!
           // Sync with server by clearing local active session.
@@ -1041,7 +1046,10 @@ class _LogsLeadsPageState extends State<LogsLeadsPage>
           _initSocket();
           _loadTeamStatus();
           // ── Start background location tracking
-          await startBackgroundTracking(email);
+          if (!kIsWeb && dart_io.Platform.isAndroid) {
+            await Permission.ignoreBatteryOptimizations.request();
+          }
+          await startBackgroundTracking(email, sessionStart: st);
         }
       }
     } catch (e) {

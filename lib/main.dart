@@ -7268,6 +7268,8 @@ class _LiveUserMapPageState extends State<LiveUserMapPage> {
   String? _lastReason;
   String? _ipAddress;
   bool _isInside = false;
+  bool _isPaused = false;
+  bool _isTimeout = false;
   String _lastUpdated = 'Connecting...';
   bool _isLoading = true;
   io.Socket? _socket;
@@ -7363,13 +7365,15 @@ class _LiveUserMapPageState extends State<LiveUserMapPage> {
   }
 
   // ── Shared helper: apply a location update to the map ──
-  void _applyLocation(double lat, double lng, bool isInside, String label) {
+  void _applyLocation(double lat, double lng, bool isInside, String label, {bool isPaused = false, bool isTimeout = false}) {
     if (!mounted) return;
     setState(() {
       _userLat = lat;
       _userLng = lng;
       _isInside = isInside;
       _lastUpdated = label;
+      _isPaused = isPaused;
+      _isTimeout = isTimeout;
     });
     try {
       _mapController.move(
@@ -7436,11 +7440,17 @@ class _LiveUserMapPageState extends State<LiveUserMapPage> {
             if (match != null &&
                 match['latitude'] != null &&
                 match['longitude'] != null) {
+              final isPaused = match['is_paused'] == true;
+              final isTimeout = match['isTimeout'] == true;
               _applyLocation(
                 double.parse(match['latitude'].toString()),
                 double.parse(match['longitude'].toString()),
                 match['isInside'] == true,
-                'Live',
+                isPaused
+                    ? (isTimeout ? 'Paused (Signal Lost)' : 'Paused')
+                    : 'Live',
+                isPaused: isPaused,
+                isTimeout: isTimeout,
               );
             } else if (mounted) {
               setState(() => _lastUpdated = 'Waiting for signal…');
@@ -7493,12 +7503,29 @@ class _LiveUserMapPageState extends State<LiveUserMapPage> {
       if (data == null) return;
       final String email = data['email'] ?? '';
       if (email.toLowerCase() == widget.userEmail.toLowerCase()) {
-        final lat = double.tryParse(data['latitude'].toString());
-        final lng = double.tryParse(data['longitude'].toString());
+        final lat = double.tryParse((data['latitude'] ?? '').toString());
+        final lng = double.tryParse((data['longitude'] ?? '').toString());
         final isInside = data['isInside'] == true;
+        final isPaused = data['is_paused'] == true;
+        final isTimeout = data['isTimeout'] == true;
 
         if (lat != null && lng != null && mounted) {
-          _applyLocation(lat, lng, isInside, 'Just now');
+          _applyLocation(
+            lat,
+            lng,
+            isInside,
+            isPaused
+                ? (isTimeout ? 'Paused (Signal Lost)' : 'Paused')
+                : 'Just now',
+            isPaused: isPaused,
+            isTimeout: isTimeout,
+          );
+        } else if (mounted && isPaused) {
+          setState(() {
+            _isPaused = true;
+            _isTimeout = isTimeout;
+            _lastUpdated = isTimeout ? 'Paused (Signal Lost)' : 'Paused';
+          });
         }
       }
     });
@@ -7924,13 +7951,11 @@ class _LiveUserMapPageState extends State<LiveUserMapPage> {
                                                 ? Colors.white30
                                                 : (isOfflineView
                                                       ? const Color(0xFFFFB800)
-                                                      : (_isInside
-                                                            ? const Color(
-                                                                0xFF00FF87,
-                                                              )
-                                                            : const Color(
-                                                                0xFFFF2D55,
-                                                              ))),
+                                                      : (_isPaused
+                                                            ? const Color(0xFFFF9F0A)
+                                                            : (_isInside
+                                                                  ? const Color(0xFF00FF87)
+                                                                  : const Color(0xFFFF2D55)))),
                                             shape: BoxShape.circle,
                                           ),
                                         ),
@@ -7942,9 +7967,11 @@ class _LiveUserMapPageState extends State<LiveUserMapPage> {
                                                     ? (_isInside
                                                           ? 'Was inside SEDS Lab'
                                                           : 'Was outside boundary')
-                                                    : (_isInside
-                                                          ? 'Inside SEDS Lab'
-                                                          : 'Outside Boundary')),
+                                                    : (_isPaused
+                                                          ? (_isTimeout ? 'Paused (Signal Lost)' : 'Paused')
+                                                          : (_isInside
+                                                                ? 'Inside SEDS Lab'
+                                                                : 'Outside Boundary'))),
                                           style: poppins(
                                             fontSize: 13,
                                             fontWeight: FontWeight.bold,
@@ -7952,13 +7979,11 @@ class _LiveUserMapPageState extends State<LiveUserMapPage> {
                                                 ? Colors.white54
                                                 : (isOfflineView
                                                       ? const Color(0xFFFFB800)
-                                                      : (_isInside
-                                                            ? const Color(
-                                                                0xFF00FF87,
-                                                              )
-                                                            : const Color(
-                                                                0xFFFF2D55,
-                                                              ))),
+                                                      : (_isPaused
+                                                            ? const Color(0xFFFF9F0A)
+                                                            : (_isInside
+                                                                  ? const Color(0xFF00FF87)
+                                                                  : const Color(0xFFFF2D55)))),
                                           ),
                                         ),
                                       ],

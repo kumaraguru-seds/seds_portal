@@ -8,6 +8,12 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- WAKE_LOCK: Keeps CPU awake during background GPS work (critical for Samsung/Xiaomi) -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Allow app to request battery optimization exemption (required for reliable background service) -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Schedule exact alarms for background task recovery -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- Required for in-app APK update installation -->

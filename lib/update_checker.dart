@@ -1,385 +1,354 @@
+﻿// ─────────────────────────────────────────────────────────────────────────────
+// update_checker.dart
+//
+// Silent background APK updater for SEDS Portal.
+//
+// Behaviour:
+//  • Checks GitHub Releases (version.json) 3 seconds after home page loads.
+//  • If a newer version is available AND device has network → starts download
+//    IMMEDIATELY in the background with NO in-app dialog.
+//  • Shows a persistent system notification with real-time download progress
+//    (percentage + MB downloaded / MB total).
+//  • On download complete → replaces the progress notification with a
+//    "Tap to Install" notification. Tapping it opens the Android package installer.
+//  • If download fails → shows a brief error notification (auto-dismissed).
+//  • Checks connectivity_plus before starting to avoid wasting data on no-network.
+//  • Idempotent: if a download is already in progress, a second call is a no-op.
+// ─────────────────────────────────────────────────────────────────────────────
+
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:http/http.dart' as http;
 import 'package:open_file/open_file.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 
-// ──────────────────────────────────────────────────────────────────────────────
-// CONFIGURATION
-// ──────────────────────────────────────────────────────────────────────────────
+// ── Notification IDs (must not clash with other channels) ────────────────────
+const int _kProgressNotifId = 9901;
+const int _kInstallNotifId  = 9902;
+const int _kErrorNotifId    = 9903;
+const String _kUpdateChannelId   = 'seds_update';
+const String _kUpdateChannelName = 'App Updates';
+
+// ── GitHub Release source ─────────────────────────────────────────────────────
 const String _kGitHubOwner = 'kumaraguru-seds';
 const String _kGitHubRepo  = 'seds_portal';
-
-/// Always resolves to version.json of the latest GitHub Release.
 const String _kVersionJsonUrl =
     'https://github.com/$_kGitHubOwner/$_kGitHubRepo/releases/latest/download/version.json';
 
-// ──────────────────────────────────────────────────────────────────────────────
-// UpdateChecker
-// ──────────────────────────────────────────────────────────────────────────────
+// ── Singleton flag: prevent duplicate concurrent downloads ────────────────────
+bool _downloadInProgress = false;
 
+// ── Shared notifications plugin instance ─────────────────────────────────────
+final _notifications = FlutterLocalNotificationsPlugin();
+bool _notifInitialized = false;
+
+/// Public entry-point — call this from your home page initState.
+/// Silent, non-blocking. All feedback is via system notifications.
+Future<void> checkAndAutoUpdate() async {
+  if (kIsWeb) return;
+  if (!Platform.isAndroid) return; // Auto-update only makes sense on Android
+  if (_downloadInProgress) return; // Already downloading
+
+  try {
+    // ── 1. Ensure local notifications plugin is ready ──────────────────────
+    await _ensureNotifInit();
+
+    // ── 2. Fetch version.json from GitHub ─────────────────────────────────
+    final res = await http
+        .get(Uri.parse(_kVersionJsonUrl))
+        .timeout(const Duration(seconds: 12));
+    if (res.statusCode != 200) return;
+
+    final remote = jsonDecode(res.body) as Map<String, dynamic>;
+    final remoteVersion = (remote['version'] as String?) ?? '0.0.0';
+    final androidUrl    = (remote['android_url'] as String?) ?? '';
+    final notes         = (remote['release_notes'] as String?) ?? '';
+
+    if (androidUrl.isEmpty) return;
+
+    // ── 3. Compare versions ─────────────────────────────────────────────────
+    final info = await PackageInfo.fromPlatform();
+    if (!_isNewer(remoteVersion, info.version)) return;
+
+    // ── 4. Check connectivity — need actual network ────────────────────────
+    final connectivity = await Connectivity().checkConnectivity();
+    final hasNetwork = connectivity.any((c) =>
+        c == ConnectivityResult.mobile ||
+        c == ConnectivityResult.wifi ||
+        c == ConnectivityResult.ethernet);
+    if (!hasNetwork) return;
+
+    // ── 5. Everything checks out — start background download ───────────────
+    _downloadInBackground(remoteVersion, notes, androidUrl);
+  } catch (e) {
+    debugPrint('[AutoUpdate] Check failed: $e');
+  }
+}
+
+// ── Background download (fire-and-forget) ─────────────────────────────────────
+Future<void> _downloadInBackground(
+  String version,
+  String notes,
+  String fileUrl,
+) async {
+  if (_downloadInProgress) return;
+  _downloadInProgress = true;
+
+  final cancelToken = CancelToken();
+  String? savePath;
+
+  try {
+    // Show initial "starting" notification
+    await _showProgress(
+      title: '⬇️ SEDS Portal Update v$version',
+      body: 'Starting download…',
+      progress: 0,
+      maxProgress: 100,
+      indeterminate: true,
+    );
+
+    // Save to temp directory — no storage permission required
+    final dir = await getTemporaryDirectory();
+    savePath = '${dir.path}/seds_portal_update_v$version.apk';
+
+    // If we already have a fully downloaded file from a previous run, skip DL
+    final existing = File(savePath);
+    if (await existing.exists() && (await existing.length()) > 1000000) {
+      debugPrint('[AutoUpdate] Using cached APK: $savePath');
+      await _showInstallNotification(version, savePath, notes);
+      _downloadInProgress = false;
+      return;
+    }
+
+    int lastPercent = -1;
+
+    final dio = Dio();
+    await dio.download(
+      fileUrl,
+      savePath,
+      cancelToken: cancelToken,
+      onReceiveProgress: (received, total) async {
+        if (total <= 0) return;
+        final percent = ((received / total) * 100).round();
+        if (percent == lastPercent) return; // No UI spam
+        lastPercent = percent;
+
+        final receivedMb = (received / 1048576).toStringAsFixed(1);
+        final totalMb    = (total   / 1048576).toStringAsFixed(1);
+
+        await _showProgress(
+          title: '⬇️ Updating SEDS Portal v$version',
+          body: '$percent%  •  $receivedMb MB / $totalMb MB',
+          progress: percent,
+          maxProgress: 100,
+          indeterminate: false,
+        );
+      },
+      options: Options(
+        responseType: ResponseType.bytes,
+        followRedirects: true,
+        receiveTimeout: const Duration(minutes: 15),
+      ),
+    );
+
+    // Download complete — replace progress notification with Install button
+    await _cancelProgressNotification();
+    await _showInstallNotification(version, savePath, notes);
+  } on DioException catch (e) {
+    if (e.type == DioExceptionType.cancel) {
+      debugPrint('[AutoUpdate] Download cancelled.');
+    } else {
+      debugPrint('[AutoUpdate] Dio error: $e');
+      await _cancelProgressNotification();
+      await _showErrorNotification();
+    }
+  } catch (e) {
+    debugPrint('[AutoUpdate] Unexpected error: $e');
+    await _cancelProgressNotification();
+    await _showErrorNotification();
+  } finally {
+    _downloadInProgress = false;
+  }
+}
+
+// ── Notification helpers ──────────────────────────────────────────────────────
+
+Future<void> _ensureNotifInit() async {
+  if (_notifInitialized) return;
+  // Create the update channel
+  final androidPlugin = _notifications
+      .resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+  await androidPlugin?.createNotificationChannel(
+    const AndroidNotificationChannel(
+      _kUpdateChannelId,
+      _kUpdateChannelName,
+      description: 'Automatic app update download progress',
+      importance: Importance.low, // Low = silent, no sound while downloading
+      playSound: false,
+      enableVibration: false,
+    ),
+  );
+
+  const initSettings = InitializationSettings(
+    android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+  );
+  await _notifications.initialize(
+    initSettings,
+    onDidReceiveNotificationResponse: _onInstallTap,
+  );
+  _notifInitialized = true;
+}
+
+/// Shows / updates the progress bar notification (silent, no sound)
+Future<void> _showProgress({
+  required String title,
+  required String body,
+  required int progress,
+  required int maxProgress,
+  required bool indeterminate,
+}) async {
+  try {
+    await _notifications.show(
+      _kProgressNotifId,
+      title,
+      body,
+      NotificationDetails(
+        android: AndroidNotificationDetails(
+          _kUpdateChannelId,
+          _kUpdateChannelName,
+          channelDescription: 'Automatic app update download progress',
+          importance: Importance.low,
+          priority: Priority.low,
+          ongoing: true,            // Cannot be dismissed while downloading
+          showProgress: true,
+          maxProgress: maxProgress,
+          progress: progress,
+          indeterminate: indeterminate,
+          playSound: false,
+          enableVibration: false,
+          onlyAlertOnce: true,     // Don't buzz on every % update
+          largeIcon: const DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
+          ticker: 'Downloading SEDS Portal update…',
+        ),
+      ),
+    );
+  } catch (e) {
+    debugPrint('[AutoUpdate] Progress notification error: $e');
+  }
+}
+
+/// Cancels the in-progress download notification
+Future<void> _cancelProgressNotification() async {
+  try {
+    await _notifications.cancel(_kProgressNotifId);
+  } catch (_) {}
+}
+
+/// Shows the "Tap to install" notification after download completes
+Future<void> _showInstallNotification(
+  String version,
+  String filePath,
+  String releaseNotes,
+) async {
+  try {
+    final short = releaseNotes.length > 120
+        ? '${releaseNotes.substring(0, 120)}…'
+        : releaseNotes;
+
+    await _notifications.show(
+      _kInstallNotifId,
+      '✅ SEDS Portal v$version — Ready to Install',
+      short.isNotEmpty ? short : 'Tap to install the latest update.',
+      NotificationDetails(
+        android: AndroidNotificationDetails(
+          _kUpdateChannelId,
+          _kUpdateChannelName,
+          importance: Importance.high,
+          priority: Priority.high,
+          playSound: true,
+          enableVibration: true,
+          ongoing: false,
+          autoCancel: true,
+          largeIcon: const DrawableResourceAndroidBitmap('@mipmap/ic_launcher'),
+          styleInformation: BigTextStyleInformation(
+            short.isNotEmpty ? short : 'Tap to install the latest update.',
+            contentTitle: '✅ SEDS Portal v$version ready to install',
+            summaryText: 'Tap to open the installer',
+          ),
+          ticker: 'SEDS Portal update ready',
+        ),
+      ),
+      payload: filePath, // Pass APK path as payload so tap can open it
+    );
+  } catch (e) {
+    debugPrint('[AutoUpdate] Install notification error: $e');
+  }
+}
+
+/// Shows a brief error notification if download failed
+Future<void> _showErrorNotification() async {
+  try {
+    await _notifications.show(
+      _kErrorNotifId,
+      '⚠️ Update Download Failed',
+      'SEDS Portal update could not be downloaded. Will retry next launch.',
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          _kUpdateChannelId,
+          _kUpdateChannelName,
+          importance: Importance.defaultImportance,
+          priority: Priority.defaultPriority,
+          playSound: false,
+          enableVibration: false,
+          autoCancel: true,
+        ),
+      ),
+    );
+  } catch (_) {}
+}
+
+/// Called when user taps the "ready to install" notification
+void _onInstallTap(NotificationResponse response) async {
+  final filePath = response.payload;
+  if (filePath == null || filePath.isEmpty) return;
+  try {
+    await _notifications.cancel(_kInstallNotifId);
+    final result = await OpenFile.open(filePath);
+    debugPrint('[AutoUpdate] OpenFile result: ${result.message}');
+  } catch (e) {
+    debugPrint('[AutoUpdate] Install tap error: $e');
+  }
+}
+
+// ── Semantic version comparison ───────────────────────────────────────────────
+bool _isNewer(String remote, String current) {
+  List<int> parse(String v) =>
+      v.split('.').map((s) => int.tryParse(s.trim()) ?? 0).toList();
+  final r = parse(remote);
+  final c = parse(current);
+  final len = r.length > c.length ? r.length : c.length;
+  for (int i = 0; i < len; i++) {
+    final rv = i < r.length ? r[i] : 0;
+    final cv = i < c.length ? c[i] : 0;
+    if (rv > cv) return true;
+    if (rv < cv) return false;
+  }
+  return false;
+}
+
+// ── Legacy shim — keeps existing `UpdateChecker.checkForUpdates(context)` ────
+// call sites compiling without any changes to those files.
 class UpdateChecker {
   UpdateChecker._();
 
-  /// Call this from your home page initState (already wired in main.dart).
-  static Future<void> checkForUpdates(BuildContext context) async {
-    if (kIsWeb) return;
-    if (!Platform.isAndroid && !Platform.isWindows) return;
-
-    try {
-      final response = await http
-          .get(Uri.parse(_kVersionJsonUrl))
-          .timeout(const Duration(seconds: 10));
-
-      if (response.statusCode != 200) return;
-
-      final Map<String, dynamic> remote =
-          jsonDecode(response.body) as Map<String, dynamic>;
-
-      final String remoteVersion = (remote['version'] as String?) ?? '0.0.0';
-      final String androidUrl    = (remote['android_url'] as String?) ?? '';
-      final String windowsUrl    = (remote['windows_url'] as String?) ?? '';
-      final String notes =
-          (remote['release_notes'] as String?) ?? 'Bug fixes and improvements.';
-
-      final PackageInfo info = await PackageInfo.fromPlatform();
-      final String currentVersion = info.version;
-
-      if (!_isNewer(remoteVersion, currentVersion)) return;
-
-      if (context.mounted) {
-        _showUpdateDialog(
-          context: context,
-          newVersion: remoteVersion,
-          notes: notes,
-          downloadUrl: Platform.isAndroid ? androidUrl : windowsUrl,
-        );
-      }
-    } catch (e) {
-      debugPrint('[UpdateChecker] check failed: $e');
-    }
-  }
-
-  // ── Semantic version comparison ──────────────────────────────────────────
-
-  static bool _isNewer(String remote, String current) {
-    List<int> parse(String v) =>
-        v.split('.').map((s) => int.tryParse(s.trim()) ?? 0).toList();
-    final r = parse(remote);
-    final c = parse(current);
-    final len = r.length > c.length ? r.length : c.length;
-    for (int i = 0; i < len; i++) {
-      final rv = i < r.length ? r[i] : 0;
-      final cv = i < c.length ? c[i] : 0;
-      if (rv > cv) return true;
-      if (rv < cv) return false;
-    }
-    return false;
-  }
-
-  // ── Update available dialog ───────────────────────────────────────────────
-
-  static void _showUpdateDialog({
-    required BuildContext context,
-    required String newVersion,
-    required String notes,
-    required String downloadUrl,
-  }) {
-    final tp = GoogleFonts.poppins;
-
-    showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => Dialog(
-        backgroundColor: Colors.transparent,
-        child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(24),
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Color(0xFF1A2B4A), Color(0xFF0F1C35)],
-            ),
-            border: Border.all(color: const Color(0xFF2A4080), width: 1.5),
-            boxShadow: [
-              BoxShadow(
-                color: const Color(0xFF4DA6FF).withValues(alpha: 0.25),
-                blurRadius: 40,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Header
-              Row(
-                children: [
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF4DA6FF).withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(
-                      Icons.system_update_rounded,
-                      color: Color(0xFF4DA6FF),
-                      size: 22,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Update Available',
-                        style: tp(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 17,
-                        ),
-                      ),
-                      Text(
-                        'Version $newVersion',
-                        style: tp(
-                          color: const Color(0xFF4DA6FF),
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 20),
-              Divider(color: const Color(0xFF2A4080).withValues(alpha: 0.6)),
-              const SizedBox(height: 16),
-
-              // Release notes
-              Text(
-                "What's new",
-                style: tp(
-                  color: Colors.white70,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 12,
-                  letterSpacing: 0.8,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                notes,
-                style: tp(color: Colors.white60, fontSize: 13, height: 1.5),
-              ),
-
-              const SizedBox(height: 24),
-
-              // Actions
-              Row(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  TextButton(
-                    onPressed: () => Navigator.of(ctx).pop(),
-                    child: Text(
-                      'Later',
-                      style: tp(color: Colors.white38, fontSize: 13),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: const Color(0xFF4DA6FF),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 20, vertical: 12),
-                      elevation: 0,
-                    ),
-                    icon: const Icon(Icons.download_rounded, size: 18),
-                    label: Text(
-                      'Update Now',
-                      style: tp(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 13,
-                        color: Colors.white,
-                      ),
-                    ),
-                    onPressed: () {
-                      Navigator.of(ctx).pop();
-                      // Both Android & Windows: download in-app + auto-launch installer
-                      _downloadAndInstall(
-                        ctx,
-                        downloadUrl,
-                        newVersion,
-                        Platform.isAndroid ? 'apk' : 'exe',
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  // ── Android + Windows: download in-app and auto-launch installer ──────────
-
-  static Future<void> _downloadAndInstall(
-    BuildContext context,
-    String fileUrl,
-    String version,
-    String extension,  // 'apk' or 'exe'
-  ) async {
-    // ValueNotifier lets us update the dialog from outside its builder
-    final progressNotifier = ValueNotifier<double>(0.0);
-    final overlayContext = context;
-    final cancelToken = CancelToken();
-
-    if (!overlayContext.mounted) return;
-
-    showDialog<void>(
-      context: overlayContext,
-      barrierDismissible: false,
-      builder: (ctx) => ValueListenableBuilder<double>(
-        valueListenable: progressNotifier,
-        builder: (_, prog, _) => Dialog(
-          backgroundColor: Colors.transparent,
-          child: Container(
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(20),
-              gradient: const LinearGradient(
-                colors: [Color(0xFF1A2B4A), Color(0xFF0F1C35)],
-              ),
-              border: Border.all(color: const Color(0xFF2A4080), width: 1.5),
-            ),
-            padding: const EdgeInsets.all(28),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.download_rounded,
-                    color: Color(0xFF4DA6FF), size: 36),
-                const SizedBox(height: 16),
-                Text(
-                  'Downloading Update...',
-                  style: GoogleFonts.poppins(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 15,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'v$version',
-                  style: GoogleFonts.poppins(
-                      color: const Color(0xFF4DA6FF), fontSize: 12),
-                ),
-                const SizedBox(height: 20),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: LinearProgressIndicator(
-                    value: prog,
-                    backgroundColor:
-                        const Color(0xFF2A4080).withValues(alpha: 0.4),
-                    color: const Color(0xFF4DA6FF),
-                    minHeight: 8,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  '${(prog * 100).toStringAsFixed(0)}%',
-                  style: GoogleFonts.poppins(
-                      color: Colors.white60, fontSize: 12),
-                ),
-                const SizedBox(height: 20),
-                TextButton.icon(
-                  onPressed: () {
-                    cancelToken.cancel('User cancelled download');
-                    Navigator.of(ctx).pop();
-                  },
-                  icon: const Icon(Icons.close_rounded, color: Colors.white60, size: 16),
-                  label: Text(
-                    'Cancel Update',
-                    style: GoogleFonts.poppins(color: Colors.white60, fontSize: 13),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-
-    try {
-      // Save to app's temp directory — no storage permission needed
-      final dir = await getTemporaryDirectory();
-      final savePath = '${dir.path}/seds_portal_update_v$version.$extension';
-
-      final dio = Dio();
-      await dio.download(
-        fileUrl,
-        savePath,
-        cancelToken: cancelToken,
-        onReceiveProgress: (received, total) {
-          if (total > 0) {
-            progressNotifier.value = received / total;
-          }
-        },
-        options: Options(
-          responseType: ResponseType.bytes,
-          followRedirects: true,
-          receiveTimeout: const Duration(minutes: 10),
-        ),
-      );
-
-      // Close progress dialog
-      if (overlayContext.mounted) {
-        Navigator.of(overlayContext, rootNavigator: true).pop();
-      }
-
-      // Launch Android package installer / Windows exe setup
-      final result = await OpenFile.open(savePath);
-      debugPrint('[UpdateChecker] OpenFile result: ${result.message}');
-      if (Platform.isWindows) {
-        exit(0);
-      }
-    } catch (e) {
-      debugPrint('[UpdateChecker] Download failed: $e');
-
-      // If download was cancelled by the user, show cancel toast rather than error message
-      if (e is DioException && e.type == DioExceptionType.cancel) {
-        if (overlayContext.mounted) {
-          ScaffoldMessenger.of(overlayContext).showSnackBar(
-            const SnackBar(
-              content: Text('Update cancelled.'),
-              backgroundColor: Color(0xFF2A4080),
-            ),
-          );
-        }
-        return;
-      }
-
-      if (overlayContext.mounted) {
-        Navigator.of(overlayContext, rootNavigator: true).pop();
-        ScaffoldMessenger.of(overlayContext).showSnackBar(
-          SnackBar(
-            content: Text('Download failed. Please try again.'),
-            backgroundColor: Colors.red.shade700,
-          ),
-        );
-      }
-    }
+  static Future<void> checkForUpdates(dynamic context) async {
+    await checkAndAutoUpdate();
   }
 }
